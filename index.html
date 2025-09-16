@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neo4j Node Explorer</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f5f7fb;
+      color: #111;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: linear-gradient(180deg, #f0f4ff 0%, #ffffff 40%);
+    }
+
+    header {
+      background: #0b4c8c;
+      color: #fff;
+      padding: 1.5rem 2rem;
+      box-shadow: 0 4px 16px rgba(7, 34, 66, 0.2);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.75rem;
+      letter-spacing: 0.02em;
+    }
+
+    header p {
+      margin: 0.35rem 0 0;
+      font-size: 0.95rem;
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    main {
+      flex: 1;
+      padding: 2rem clamp(1rem, 4vw, 3rem);
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 12px 32px rgba(15, 36, 80, 0.12);
+    }
+
+    button {
+      border: none;
+      background: #107cc0;
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.95rem;
+      letter-spacing: 0.02em;
+      padding: 0.65rem 1.2rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+      box-shadow: 0 10px 18px rgba(7, 84, 146, 0.26);
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 24px rgba(7, 84, 146, 0.32);
+      background: #0d6ca7;
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.7;
+      box-shadow: none;
+    }
+
+    #status {
+      font-size: 0.95rem;
+      flex: 1 1 16rem;
+      color: #0b2c4a;
+    }
+
+    #status.error {
+      color: #b00020;
+      font-weight: 600;
+    }
+
+    .table-wrapper {
+      position: relative;
+      flex: 1;
+      overflow: hidden;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 18px 45px rgba(10, 32, 68, 0.16);
+      border: 1px solid rgba(16, 59, 112, 0.12);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+
+    thead {
+      background: rgba(6, 53, 110, 0.92);
+      color: #fff;
+    }
+
+    th,
+    td {
+      padding: 0.85rem 1rem;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(6, 53, 110, 0.12);
+    }
+
+    tbody tr:nth-child(odd) {
+      background: rgba(12, 74, 142, 0.05);
+    }
+
+    tbody tr:hover {
+      background: rgba(12, 74, 142, 0.1);
+    }
+
+    .properties {
+      font-family: "Fira Code", "Source Code Pro", Menlo, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(18, 41, 80, 0.06);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      margin: 0;
+    }
+
+    .empty-state {
+      padding: 2rem;
+      text-align: center;
+      color: rgba(6, 53, 110, 0.65);
+    }
+
+    @media (max-width: 720px) {
+      header h1 {
+        font-size: 1.4rem;
+      }
+
+      table {
+        font-size: 0.85rem;
+      }
+
+      th,
+      td {
+        padding: 0.65rem 0.75rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Neo4j Node Explorer</h1>
+    <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <button id="reload">Reload nodes</button>
+      <div id="status" role="status" aria-live="polite">Ready to connect.</div>
+    </section>
+
+    <section class="table-wrapper" aria-live="polite">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Element ID</th>
+            <th scope="col">Labels</th>
+            <th scope="col">Properties</th>
+          </tr>
+        </thead>
+        <tbody id="nodesBody">
+          <tr class="empty-state">
+            <td colspan="4">Click "Reload nodes" to view the first 100 nodes in the database.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/neo4j-driver-lite@5.13.0/browser/neo4j-lite-web.min.js"
+    crossorigin="anonymous"
+  ></script>
+  <script>
+    (function () {
+      "use strict";
+
+      const config = {
+        uri: "neo4j+s://885f2ada.databases.neo4j.io",
+        username: "885f2ada",
+        password: "QDHZQW3YuBD_btPx0-EwQhYp2mbI7GS3Eh1zw2Lt4mU",
+        database: "885f2ada",
+      };
+
+      const reloadButton = document.getElementById("reload");
+      const statusElement = document.getElementById("status");
+      const nodesBody = document.getElementById("nodesBody");
+
+      const setStatus = (message, isError = false) => {
+        statusElement.textContent = message;
+        statusElement.classList.toggle("error", Boolean(isError));
+      };
+
+      const setLoading = (isLoading) => {
+        reloadButton.disabled = isLoading;
+        reloadButton.textContent = isLoading ? "Loading…" : "Reload nodes";
+      };
+
+      const clearTable = () => {
+        while (nodesBody.firstChild) {
+          nodesBody.removeChild(nodesBody.firstChild);
+        }
+      };
+
+      const renderEmptyState = () => {
+        const row = document.createElement("tr");
+        row.className = "empty-state";
+        const cell = document.createElement("td");
+        cell.colSpan = 4;
+        cell.textContent = "No nodes were returned by the query.";
+        row.appendChild(cell);
+        nodesBody.appendChild(row);
+      };
+
+      const renderNodes = (records) => {
+        clearTable();
+
+        if (!records.length) {
+          renderEmptyState();
+          return;
+        }
+
+        records.forEach((record, index) => {
+          const node = record.get("n");
+          const row = document.createElement("tr");
+
+          const indexCell = document.createElement("td");
+          indexCell.textContent = String(index + 1);
+          row.appendChild(indexCell);
+
+          const idCell = document.createElement("td");
+          idCell.textContent = node.elementId || (node.identity && node.identity.toString()) || "(unknown)";
+          row.appendChild(idCell);
+
+          const labelsCell = document.createElement("td");
+          labelsCell.textContent = node.labels && node.labels.length ? node.labels.join(", ") : "(no labels)";
+          row.appendChild(labelsCell);
+
+          const propertiesCell = document.createElement("td");
+          const pre = document.createElement("pre");
+          pre.className = "properties";
+          pre.textContent = JSON.stringify(node.properties || {}, null, 2);
+          propertiesCell.appendChild(pre);
+          row.appendChild(propertiesCell);
+
+          nodesBody.appendChild(row);
+        });
+      };
+
+      const fetchNodes = async () => {
+        setLoading(true);
+        setStatus("Connecting to Neo4j Aura…");
+
+        let driver;
+        let session;
+
+        try {
+          driver = neo4j.driver(
+            config.uri,
+            neo4j.auth.basic(config.username, config.password),
+            {
+              disableLosslessIntegers: true,
+              connectionTimeout: 15000,
+            }
+          );
+
+          session = driver.session({ database: config.database });
+          const result = await session.run("MATCH (n) RETURN n LIMIT 100");
+          renderNodes(result.records);
+          setStatus(`Fetched ${result.records.length} node${result.records.length === 1 ? "" : "s"}.`);
+        } catch (error) {
+          console.error("Failed to fetch nodes", error);
+          setStatus(`Unable to load nodes: ${error.message || error}`, true);
+          renderEmptyState();
+        } finally {
+          if (session) {
+            session.close().catch(() => {});
+          }
+          if (driver) {
+            driver.close().catch(() => {});
+          }
+          setLoading(false);
+        }
+      };
+
+      reloadButton.addEventListener("click", () => {
+        fetchNodes();
+      });
+
+      // Automatically load data when the page is ready.
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", fetchNodes, { once: true });
+      } else {
+        fetchNodes();
+      }
+    })();
+  </script>
+</body>
+</html>
