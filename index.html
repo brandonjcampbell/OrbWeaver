@@ -314,6 +314,18 @@
         });
       };
 
+      const getNeo4jDriver = () => {
+        const neo4jGlobal = window.neo4j || window.neo4jLite || window.neo4jDriver;
+
+        if (!neo4jGlobal) {
+          throw new Error(
+            "Neo4j JavaScript driver failed to load. Check your network connection and script tag."
+          );
+        }
+
+        return neo4jGlobal;
+      };
+
       const fetchNodes = async () => {
         setLoading(true);
         setStatus("Connecting to Neo4j Aura…");
@@ -322,6 +334,8 @@
         let session;
 
         try {
+          const neo4j = getNeo4jDriver();
+
           driver = neo4j.driver(
             config.uri,
             neo4j.auth.basic(config.username, config.password),
