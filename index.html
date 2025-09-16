@@ -157,6 +157,20 @@
       background: rgba(125, 220, 75, 0.16);
     }
 
+    tbody tr[data-action="inspect"] {
+      cursor: pointer;
+      transition: background-color 0.18s ease, transform 0.18s ease;
+    }
+
+    tbody tr[data-action="inspect"]:hover {
+      transform: translateX(2px);
+    }
+
+    tbody tr[data-action="inspect"]:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: -2px;
+    }
+
     .properties {
       font-family: "Fira Code", "Source Code Pro", Menlo, monospace;
       font-size: 0.85rem;
@@ -172,6 +186,97 @@
       padding: 2rem;
       text-align: center;
       color: rgba(18, 67, 32, 0.68);
+    }
+
+    .graph-section {
+      padding: 1.5rem clamp(1.2rem, 3vw, 2.25rem);
+      border-radius: 18px;
+      background: var(--color-surface-strong);
+      box-shadow: 0 20px 50px rgba(23, 72, 38, 0.18);
+      border: 1px solid var(--color-border);
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      min-height: 420px;
+    }
+
+    .graph-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem 1.5rem;
+    }
+
+    .graph-header h2 {
+      margin: 0;
+      font-size: clamp(1.1rem, 3vw, 1.35rem);
+      letter-spacing: 0.01em;
+      color: var(--color-primary-dark);
+    }
+
+    #graphStatus {
+      font-size: 0.95rem;
+      color: var(--color-muted);
+    }
+
+    #graphStatus.error {
+      color: #c0392b;
+      font-weight: 600;
+    }
+
+    .graph-container {
+      flex: 1 1 auto;
+      min-height: clamp(320px, 40vh, 520px);
+      border-radius: 16px;
+      border: 1px dashed rgba(31, 97, 43, 0.24);
+      background: rgba(244, 255, 230, 0.58);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .graph-container svg {
+      width: 100%;
+      height: 100%;
+      font-family: "Fira Code", "Source Code Pro", Menlo, monospace;
+    }
+
+    .graph-link {
+      stroke: rgba(24, 84, 33, 0.32);
+      stroke-width: 1.6px;
+      stroke-linecap: round;
+    }
+
+    .graph-node circle {
+      fill: var(--color-primary);
+      stroke: rgba(255, 255, 255, 0.9);
+      stroke-width: 2.2px;
+      filter: drop-shadow(0 12px 24px rgba(21, 74, 33, 0.28));
+      transition: transform 0.2s ease, fill 0.2s ease;
+    }
+
+    .graph-node text {
+      fill: #f6ffe9;
+      font-size: 0.7rem;
+      pointer-events: none;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: rgba(18, 67, 32, 0.35);
+      stroke-width: 2px;
+      stroke-linejoin: round;
+    }
+
+    .graph-node:hover circle,
+    .graph-node:focus-visible circle {
+      fill: var(--color-accent-dark);
+    }
+
+    .graph-node--expanded circle {
+      fill: #2a7b3c;
+    }
+
+    .graph-node--active circle {
+      fill: var(--color-accent);
     }
 
     @media (max-width: 720px) {
@@ -196,6 +301,10 @@
       th,
       td {
         padding: 0.65rem 0.75rem;
+      }
+
+      .graph-section {
+        padding: 1.25rem;
       }
     }
   </style>
@@ -232,12 +341,28 @@
         </tbody>
       </table>
     </section>
+
+    <section class="graph-section" aria-label="Graph explorer">
+      <div class="graph-header">
+        <h2>Graph explorer</h2>
+        <div id="graphStatus" role="status" aria-live="polite">
+          Select a node from the table to explore its relationships.
+        </div>
+      </div>
+      <div
+        id="graphContainer"
+        class="graph-container"
+        role="application"
+        aria-label="Interactive graph visualization"
+      ></div>
+    </section>
   </main>
 
   <script
     src="https://cdn.jsdelivr.net/npm/neo4j-driver-lite@5.13.0/lib/browser/neo4j-lite-web.min.js"
     crossorigin="anonymous"
   ></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js" crossorigin="anonymous"></script>
   <script>
     (function () {
       "use strict";
@@ -252,10 +377,17 @@
       const reloadButton = document.getElementById("reload");
       const statusElement = document.getElementById("status");
       const nodesBody = document.getElementById("nodesBody");
+      const graphContainer = document.getElementById("graphContainer");
+      const graphStatus = document.getElementById("graphStatus");
 
       const setStatus = (message, isError = false) => {
         statusElement.textContent = message;
         statusElement.classList.toggle("error", Boolean(isError));
+      };
+
+      const setGraphStatus = (message, isError = false) => {
+        graphStatus.textContent = message;
+        graphStatus.classList.toggle("error", Boolean(isError));
       };
 
       const setLoading = (isLoading) => {
@@ -279,6 +411,46 @@
         nodesBody.appendChild(row);
       };
 
+      const formatNode = (node) => {
+        if (!node) {
+          throw new Error("Unable to format an undefined node.");
+        }
+
+        const rawElementId = typeof node.elementId === "function" ? node.elementId() : node.elementId;
+        const identity = node.identity && typeof node.identity.toString === "function" ? node.identity.toString() : node.identity;
+        const id = String(rawElementId || identity || node.id || Math.random().toString(36).slice(2));
+        const labels = Array.isArray(node.labels) ? [...node.labels] : [];
+        const properties = node.properties && typeof node.properties === "object" ? { ...node.properties } : {};
+
+        const displayName =
+          node.displayName ||
+          properties.name ||
+          properties.title ||
+          properties.fullName ||
+          properties.displayName ||
+          properties.id ||
+          properties.uid ||
+          (labels.length ? labels[0] : null) ||
+          id;
+
+        const tooltipParts = [`ID: ${id}`];
+        if (labels.length) {
+          tooltipParts.push(`Labels: ${labels.join(", ")}`);
+        }
+        if (Object.keys(properties).length) {
+          tooltipParts.push(`Properties:\n${JSON.stringify(properties, null, 2)}`);
+        }
+
+        return {
+          id,
+          elementId: id,
+          labels,
+          properties,
+          displayName,
+          tooltip: tooltipParts.join("\n"),
+        };
+      };
+
       const renderNodes = (records) => {
         clearTable();
 
@@ -289,26 +461,45 @@
 
         records.forEach((record, index) => {
           const node = record.get("n");
+          const formattedNode = formatNode(node);
           const row = document.createElement("tr");
+          row.dataset.action = "inspect";
+          row.dataset.elementId = formattedNode.elementId;
+          row.tabIndex = 0;
+          row.setAttribute("role", "button");
 
           const indexCell = document.createElement("td");
           indexCell.textContent = String(index + 1);
           row.appendChild(indexCell);
 
           const idCell = document.createElement("td");
-          idCell.textContent = node.elementId || (node.identity && node.identity.toString()) || "(unknown)";
+          idCell.textContent = formattedNode.elementId || "(unknown)";
           row.appendChild(idCell);
 
           const labelsCell = document.createElement("td");
-          labelsCell.textContent = node.labels && node.labels.length ? node.labels.join(", ") : "(no labels)";
+          labelsCell.textContent = formattedNode.labels.length ? formattedNode.labels.join(", ") : "(no labels)";
           row.appendChild(labelsCell);
 
           const propertiesCell = document.createElement("td");
           const pre = document.createElement("pre");
           pre.className = "properties";
-          pre.textContent = JSON.stringify(node.properties || {}, null, 2);
+          pre.textContent = JSON.stringify(formattedNode.properties || {}, null, 2);
           propertiesCell.appendChild(pre);
           row.appendChild(propertiesCell);
+
+          row.__neo4jNode = node;
+
+          const activateRow = () => {
+            openGraphWithRoot(row.__neo4jNode, formattedNode.displayName);
+          };
+
+          row.addEventListener("click", activateRow);
+          row.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              activateRow();
+            }
+          });
 
           nodesBody.appendChild(row);
         });
@@ -326,16 +517,27 @@
         return neo4jGlobal;
       };
 
-      const fetchNodes = async () => {
-        setLoading(true);
-        setStatus("Connecting to Neo4j Aura…");
+      const getD3 = () => {
+        const d3Global = window.d3;
+
+        if (!d3Global) {
+          throw new Error(
+            "D3.js failed to load. Ensure the D3 script is available and the network connection is active."
+          );
+        }
+
+        return d3Global;
+      };
+
+      const d3Instance = getD3();
+
+      const runNeo4jQuery = async (query, params = {}) => {
+        const neo4j = getNeo4jDriver();
 
         let driver;
         let session;
 
         try {
-          const neo4j = getNeo4jDriver();
-
           driver = neo4j.driver(
             config.uri,
             neo4j.auth.basic(config.username, config.password),
@@ -346,13 +548,7 @@
           );
 
           session = driver.session({ database: config.database });
-          const result = await session.run("MATCH (n) RETURN n LIMIT 100");
-          renderNodes(result.records);
-          setStatus(`Fetched ${result.records.length} node${result.records.length === 1 ? "" : "s"}.`);
-        } catch (error) {
-          console.error("Failed to fetch nodes", error);
-          setStatus(`Unable to load nodes: ${error.message || error}`, true);
-          renderEmptyState();
+          return await session.run(query, params);
         } finally {
           if (session) {
             session.close().catch(() => {});
@@ -360,6 +556,391 @@
           if (driver) {
             driver.close().catch(() => {});
           }
+        }
+      };
+
+      class GraphExplorer {
+        constructor(container) {
+          const d3 = d3Instance;
+
+          this.container = container;
+          this.d3 = d3;
+          this.nodes = [];
+          this.links = [];
+          this.nodeIndex = new Map();
+          this.linkIndex = new Map();
+          this.loadedNodes = new Set();
+          this.activeNodeId = null;
+
+          const bounds = container.getBoundingClientRect();
+          this.width = bounds.width || container.clientWidth || 640;
+          this.height = bounds.height || container.clientHeight || 480;
+
+          this.svg = d3
+            .select(container)
+            .append("svg")
+            .attr("viewBox", `0 0 ${this.width} ${this.height}`)
+            .attr("preserveAspectRatio", "xMidYMid meet");
+
+          this.linkGroup = this.svg.append("g");
+          this.nodeGroup = this.svg.append("g");
+
+          this.simulation = d3
+            .forceSimulation(this.nodes)
+            .force(
+              "charge",
+              d3
+                .forceManyBody()
+                .strength(-320)
+                .distanceMax(Math.max(this.width, this.height))
+            )
+            .force(
+              "link",
+              d3
+                .forceLink(this.links)
+                .id((d) => d.id)
+                .distance(140)
+                .strength(0.8)
+            )
+            .force("center", d3.forceCenter(this.width / 2, this.height / 2))
+            .force("collision", d3.forceCollide().radius(48));
+
+          this.nodeElements = this.nodeGroup.selectAll(".graph-node");
+          this.linkElements = this.linkGroup.selectAll(".graph-link");
+
+          this.dragBehavior = d3
+            .drag()
+            .on("start", (event, d) => {
+              if (!event.active) {
+                this.simulation.alphaTarget(0.3).restart();
+              }
+              d.fx = d.x;
+              d.fy = d.y;
+            })
+            .on("drag", (event, d) => {
+              d.fx = event.x;
+              d.fy = event.y;
+            })
+            .on("end", (event, d) => {
+              if (!event.active) {
+                this.simulation.alphaTarget(0);
+              }
+              d.fx = null;
+              d.fy = null;
+            });
+
+          this.simulation.on("tick", () => {
+            const width = this.width;
+            const height = this.height;
+
+            this.linkElements
+              .attr("x1", (d) => (typeof d.source === "object" ? d.source.x : width / 2))
+              .attr("y1", (d) => (typeof d.source === "object" ? d.source.y : height / 2))
+              .attr("x2", (d) => (typeof d.target === "object" ? d.target.x : width / 2))
+              .attr("y2", (d) => (typeof d.target === "object" ? d.target.y : height / 2));
+
+            this.nodeElements.attr("transform", (d) => {
+              const x = typeof d.x === "number" ? d.x : width / 2;
+              const y = typeof d.y === "number" ? d.y : height / 2;
+              return `translate(${x}, ${y})`;
+            });
+          });
+
+          this.update();
+        }
+
+        reset() {
+          this.nodes.length = 0;
+          this.links.length = 0;
+          this.nodeIndex.clear();
+          this.linkIndex.clear();
+          this.loadedNodes.clear();
+          this.activeNodeId = null;
+          this.update();
+        }
+
+        addOrUpdateNode(node, options = {}) {
+          const existing = this.nodeIndex.get(node.id);
+
+          if (existing) {
+            Object.assign(existing, node);
+            return existing;
+          }
+
+          const nodeCopy = { ...node };
+          this.nodeIndex.set(nodeCopy.id, nodeCopy);
+          this.nodes.push(nodeCopy);
+
+          if (!options.skipUpdate) {
+            this.update();
+          }
+
+          return nodeCopy;
+        }
+
+        addLink(sourceId, targetId, type, key, options = {}) {
+          const linkKey = key || `${sourceId}->${targetId}:${type}`;
+
+          if (this.linkIndex.has(linkKey)) {
+            return false;
+          }
+
+          const link = {
+            key: linkKey,
+            source: sourceId,
+            target: targetId,
+            sourceId,
+            targetId,
+            type,
+          };
+
+          this.linkIndex.set(linkKey, link);
+          this.links.push(link);
+
+          if (!options.skipUpdate) {
+            this.update();
+          }
+
+          return true;
+        }
+
+        markNodeLoaded(nodeId) {
+          this.loadedNodes.add(nodeId);
+          this.refreshNodeState();
+        }
+
+        isNodeLoaded(nodeId) {
+          return this.loadedNodes.has(nodeId);
+        }
+
+        setActiveNode(nodeId) {
+          this.activeNodeId = nodeId;
+          this.refreshNodeState();
+        }
+
+        refreshNodeState() {
+          if (!this.nodeElements) {
+            return;
+          }
+
+          this.nodeElements
+            .classed("graph-node--expanded", (d) => this.loadedNodes.has(d.id))
+            .classed("graph-node--active", (d) => d.id === this.activeNodeId);
+        }
+
+        countConnections(nodeId) {
+          return this.links.reduce((total, link) => {
+            return (
+              total +
+              (link.sourceId === nodeId || link.targetId === nodeId ||
+              (typeof link.source === "object" && link.source.id === nodeId) ||
+              (typeof link.target === "object" && link.target.id === nodeId)
+                ? 1
+                : 0)
+            );
+          }, 0);
+        }
+
+        setNodeClickHandler(handler) {
+          this.handleNodeClick = handler;
+          this.update();
+        }
+
+        update() {
+          const d3 = this.d3;
+
+          this.linkElements = this.linkGroup
+            .selectAll("line.graph-link")
+            .data(this.links, (d) => d.key);
+
+          this.linkElements.exit().remove();
+
+          const linkEnter = this.linkElements.enter().append("line").attr("class", "graph-link");
+          linkEnter.append("title");
+
+          this.linkElements = linkEnter.merge(this.linkElements);
+          this.linkElements.select("title").text((d) => d.type || "RELATED");
+
+          this.nodeElements = this.nodeGroup
+            .selectAll("g.graph-node")
+            .data(this.nodes, (d) => d.id);
+
+          this.nodeElements.exit().remove();
+
+          const nodeEnter = this.nodeElements
+            .enter()
+            .append("g")
+            .attr("class", "graph-node")
+            .attr("tabindex", 0)
+            .attr("role", "button")
+            .call(this.dragBehavior);
+
+          nodeEnter.append("circle").attr("r", 32);
+
+          nodeEnter
+            .append("text")
+            .attr("dy", 4)
+            .text((d) => d.displayName);
+
+          nodeEnter.append("title");
+
+          this.nodeElements = nodeEnter.merge(this.nodeElements);
+
+          this.nodeElements.select("text").text((d) => d.displayName);
+          this.nodeElements.select("title").text((d) => d.tooltip || d.displayName || d.id);
+
+          this.nodeElements.on("click", (event, d) => {
+            event.stopPropagation();
+            if (this.handleNodeClick) {
+              this.handleNodeClick(d);
+            }
+          });
+
+          this.nodeElements.on("keydown", (event, d) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              if (this.handleNodeClick) {
+                this.handleNodeClick(d);
+              }
+            }
+          });
+
+          this.refreshNodeState();
+
+          if (this.nodes.length) {
+            this.simulation.nodes(this.nodes);
+            this.simulation.force("link").links(this.links);
+            this.simulation.alpha(0.9).restart();
+          } else {
+            this.simulation.stop();
+          }
+        }
+      }
+
+      const graphExplorer = new GraphExplorer(graphContainer);
+
+      const loadNeighborsForNode = async (node, options = {}) => {
+        const { announceIfLoaded = true } = options;
+        const formatted = formatNode(node);
+        const nodeId = formatted.elementId;
+        const displayName = formatted.displayName;
+
+        graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
+        graphExplorer.setActiveNode(nodeId);
+
+        if (graphExplorer.isNodeLoaded(nodeId)) {
+          if (announceIfLoaded) {
+            setGraphStatus(`${displayName} is already expanded.`);
+          }
+          return;
+        }
+
+        setGraphStatus(`Loading relationships for ${displayName}…`);
+
+        try {
+          const result = await runNeo4jQuery(
+            `
+              MATCH (n)
+              WHERE elementId(n) = $elementId
+              OPTIONAL MATCH (n)-[r]-(m)
+              RETURN n, r, m
+            `,
+            { elementId: nodeId }
+          );
+
+          let newConnections = 0;
+
+          result.records.forEach((record) => {
+            const rootNode = formatNode(record.get("n"));
+            graphExplorer.addOrUpdateNode(rootNode, { skipUpdate: true });
+
+            const relatedNode = record.get("m");
+            const relationship = record.get("r");
+
+            if (relatedNode) {
+              const formattedNeighbor = formatNode(relatedNode);
+              graphExplorer.addOrUpdateNode(formattedNeighbor, { skipUpdate: true });
+
+              const relationshipType = relationship && relationship.type ? relationship.type : "RELATED";
+              const relationshipId =
+                relationship &&
+                (typeof relationship.elementId === "function"
+                  ? relationship.elementId()
+                  : relationship.elementId);
+
+              const added = graphExplorer.addLink(
+                rootNode.elementId,
+                formattedNeighbor.elementId,
+                relationshipType,
+                relationshipId || undefined,
+                { skipUpdate: true }
+              );
+
+              if (added) {
+                newConnections += 1;
+              }
+            }
+          });
+
+          graphExplorer.markNodeLoaded(nodeId);
+          graphExplorer.setActiveNode(nodeId);
+          graphExplorer.update();
+
+          if (!newConnections) {
+            setGraphStatus(`No related nodes found for ${displayName}.`);
+          } else {
+            const totalConnections = graphExplorer.countConnections(nodeId);
+            setGraphStatus(
+              `Loaded ${newConnections} connection${newConnections === 1 ? "" : "s"} for ${displayName}. ${totalConnections} total in view.`
+            );
+          }
+        } catch (error) {
+          console.error("Failed to load relationships", error);
+          setGraphStatus(`Unable to load relationships: ${error.message || error}`, true);
+        }
+      };
+
+      const openGraphWithRoot = (node, labelFallback) => {
+        if (!node) {
+          return;
+        }
+
+        const formatted = formatNode(node);
+        graphExplorer.reset();
+        graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
+        graphExplorer.update();
+        graphExplorer.setActiveNode(formatted.elementId);
+        setGraphStatus(`Exploring ${labelFallback || formatted.displayName}.`);
+
+        loadNeighborsForNode(formatted, { announceIfLoaded: false }).catch((error) => {
+          console.error("Failed to initialize graph", error);
+        });
+
+        if (typeof graphContainer.scrollIntoView === "function") {
+          graphContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      };
+
+      graphExplorer.setNodeClickHandler((node) => {
+        loadNeighborsForNode(node).catch((error) => {
+          console.error("Failed to expand node", error);
+        });
+      });
+
+      const fetchNodes = async () => {
+        setLoading(true);
+        setStatus("Connecting to Neo4j Aura…");
+
+        try {
+          const result = await runNeo4jQuery("MATCH (n) RETURN n LIMIT 100");
+          renderNodes(result.records);
+          setStatus(`Fetched ${result.records.length} node${result.records.length === 1 ? "" : "s"}.`);
+        } catch (error) {
+          console.error("Failed to fetch nodes", error);
+          setStatus(`Unable to load nodes: ${error.message || error}`, true);
+          renderEmptyState();
+          setGraphStatus("Select a node from the table to explore its relationships.");
+        } finally {
           setLoading(false);
         }
       };
@@ -368,7 +949,6 @@
         fetchNodes();
       });
 
-      // Automatically load data when the page is ready.
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", fetchNodes, { once: true });
       } else {
