@@ -329,6 +329,21 @@
       stroke-linecap: round;
     }
 
+    .graph-link-label {
+      fill: var(--color-primary-dark);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-anchor: middle;
+      dominant-baseline: middle;
+      pointer-events: none;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.82);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+      text-shadow: 0 1px 2px rgba(18, 67, 32, 0.12);
+    }
+
     .graph-node circle {
       fill: var(--color-primary);
       stroke: rgba(255, 255, 255, 0.9);
@@ -619,6 +634,15 @@
         };
       };
 
+      const formatRelationshipType = (type) => {
+        if (!type) {
+          return "RELATED";
+        }
+
+        const formatted = String(type).replace(/_/g, " ").trim();
+        return formatted || "RELATED";
+      };
+
       const renderNodes = (records) => {
         clearTable();
 
@@ -751,6 +775,7 @@
             .attr("preserveAspectRatio", "xMidYMid meet");
 
           this.linkGroup = this.svg.append("g");
+          this.labelGroup = this.svg.append("g");
           this.nodeGroup = this.svg.append("g");
 
           this.simulation = d3
@@ -775,6 +800,7 @@
 
           this.nodeElements = this.nodeGroup.selectAll(".graph-node");
           this.linkElements = this.linkGroup.selectAll(".graph-link");
+          this.linkLabelElements = this.labelGroup.selectAll(".graph-link-label");
 
           this.dragBehavior = d3
             .drag()
@@ -801,6 +827,33 @@
             const width = this.width;
             const height = this.height;
 
+            const resolvePosition = (endpoint) => {
+              if (endpoint && typeof endpoint === "object") {
+                const xValue =
+                  typeof endpoint.x === "number"
+                    ? endpoint.x
+                    : typeof endpoint.fx === "number"
+                    ? endpoint.fx
+                    : width / 2;
+                const yValue =
+                  typeof endpoint.y === "number"
+                    ? endpoint.y
+                    : typeof endpoint.fy === "number"
+                    ? endpoint.fy
+                    : height / 2;
+
+                return { x: xValue, y: yValue };
+              }
+
+              const node = this.nodeIndex.get(endpoint);
+
+              if (node && typeof node.x === "number" && typeof node.y === "number") {
+                return { x: node.x, y: node.y };
+              }
+
+              return { x: width / 2, y: height / 2 };
+            };
+
             this.linkElements
               .attr("x1", (d) => (typeof d.source === "object" ? d.source.x : width / 2))
               .attr("y1", (d) => (typeof d.source === "object" ? d.source.y : height / 2))
@@ -810,6 +863,26 @@
             this.nodeElements.attr("transform", (d) => {
               const x = typeof d.x === "number" ? d.x : width / 2;
               const y = typeof d.y === "number" ? d.y : height / 2;
+              return `translate(${x}, ${y})`;
+            });
+
+            this.linkLabelElements.attr("transform", (d) => {
+              const source = resolvePosition(d.source);
+              const target = resolvePosition(d.target);
+              const centerX = (source.x + target.x) / 2;
+              const centerY = (source.y + target.y) / 2;
+
+              const dx = target.x - source.x;
+              const dy = target.y - source.y;
+              const length = Math.sqrt(dx * dx + dy * dy) || 1;
+              const offset = 14;
+
+              const offsetX = (-dy / length) * offset;
+              const offsetY = (dx / length) * offset;
+
+              const x = centerX + offsetX;
+              const y = centerY + offsetY;
+
               return `translate(${x}, ${y})`;
             });
           });
@@ -931,7 +1004,23 @@
           linkEnter.append("title");
 
           this.linkElements = linkEnter.merge(this.linkElements);
-          this.linkElements.select("title").text((d) => d.type || "RELATED");
+          this.linkElements.select("title").text((d) => formatRelationshipType(d.type));
+
+          this.linkLabelElements = this.labelGroup
+            .selectAll("text.graph-link-label")
+            .data(this.links, (d) => d.key);
+
+          this.linkLabelElements.exit().remove();
+
+          const labelEnter = this.linkLabelElements
+            .enter()
+            .append("text")
+            .attr("class", "graph-link-label")
+            .attr("text-anchor", "middle")
+            .attr("alignment-baseline", "middle");
+
+          this.linkLabelElements = labelEnter.merge(this.linkLabelElements);
+          this.linkLabelElements.text((d) => formatRelationshipType(d.type));
 
           this.nodeElements = this.nodeGroup
             .selectAll("g.graph-node")
