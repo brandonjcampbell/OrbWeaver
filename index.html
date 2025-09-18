@@ -84,6 +84,40 @@
       border: 1px solid var(--color-border);
     }
 
+    .hop-control {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.95rem;
+      color: var(--color-primary-dark);
+    }
+
+    .hop-control label {
+      font-weight: 600;
+    }
+
+    .hop-control input[type="number"] {
+      width: 4.5rem;
+      padding: 0.3rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--color-border);
+      background: rgba(255, 255, 255, 0.9);
+      font: inherit;
+      text-align: center;
+      color: inherit;
+    }
+
+    .hop-control input[type="number"]:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+
+    .hop-control__summary {
+      font-size: 0.85rem;
+      color: var(--color-muted);
+      white-space: nowrap;
+    }
+
     button {
       border: none;
       background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
@@ -430,6 +464,19 @@
   <main>
     <section class="controls">
       <button id="reload">Reload nodes</button>
+      <div class="hop-control">
+        <label for="hopLimit">Visible hops</label>
+        <input
+          type="number"
+          id="hopLimit"
+          name="hopLimit"
+          min="0"
+          step="1"
+          value="2"
+          aria-describedby="hopLimitSummary"
+        />
+        <span id="hopLimitSummary" class="hop-control__summary" aria-live="polite">Up to 2 hops</span>
+      </div>
       <div id="status" role="status" aria-live="polite">Ready to connect.</div>
     </section>
 
@@ -504,9 +551,66 @@
       const graphContainer = document.getElementById("graphContainer");
       const graphStatus = document.getElementById("graphStatus");
       const nodeDetails = document.getElementById("nodeDetails");
+      const hopLimitInput = document.getElementById("hopLimit");
+      const hopLimitSummary = document.getElementById("hopLimitSummary");
+      const defaultHopLimit = 2;
+      let activeHopLimit = defaultHopLimit;
 
       const defaultNodeDetailsMessage = "Select a node from the table or graph to view its metadata.";
       let graphExplorer;
+
+      const parseHopLimitValue = (value) => {
+        const parsed = Number(value);
+
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          return 0;
+        }
+
+        return Math.floor(parsed);
+      };
+
+      const describeHopLimit = (value) => {
+        if (value <= 0) {
+          return "Focus only";
+        }
+
+        if (value === 1) {
+          return "Up to 1 hop";
+        }
+
+        return `Up to ${value} hops`;
+      };
+
+      const syncHopLimitDisplay = (value) => {
+        if (hopLimitInput && hopLimitInput.value !== String(value)) {
+          hopLimitInput.value = String(value);
+        }
+
+        if (hopLimitSummary) {
+          hopLimitSummary.textContent = describeHopLimit(value);
+        }
+      };
+
+      const updateHopLimit = (value, options = {}) => {
+        const sanitized = parseHopLimitValue(value);
+        activeHopLimit = sanitized;
+        syncHopLimitDisplay(sanitized);
+
+        if (graphExplorer) {
+          graphExplorer.setDepthLimit(sanitized, options);
+        }
+
+        return sanitized;
+      };
+
+      if (hopLimitInput) {
+        activeHopLimit = updateHopLimit(hopLimitInput.value || defaultHopLimit, { skipSync: true });
+        hopLimitInput.addEventListener("input", (event) => {
+          updateHopLimit(event.target.value);
+        });
+      } else {
+        syncHopLimitDisplay(activeHopLimit);
+      }
 
       const setStatus = (message, isError = false) => {
         statusElement.textContent = message;
@@ -518,7 +622,7 @@
         graphStatus.classList.toggle("error", Boolean(isError));
       };
 
-      const renderNodeDetails = (node, connectionCount = 0) => {
+      const renderNodeDetails = (node, connectionCount = 0, hiddenConnections = 0) => {
         if (!nodeDetails) {
           return;
         }
@@ -564,6 +668,13 @@
         appendDetail("Labels", labelsText);
 
         appendDetail("Connections in view", connectionCount);
+
+        if (hiddenConnections > 0) {
+          appendDetail(
+            "Hidden beyond hop limit",
+            `${hiddenConnections} connection${hiddenConnections === 1 ? "" : "s"}`
+          );
+        }
 
         const propertiesPre = document.createElement("pre");
         propertiesPre.className = "properties";
@@ -763,6 +874,9 @@
           this.linkIndex = new Map();
           this.loadedNodes = new Set();
           this.activeNodeId = null;
+          this.focusNodeId = null;
+          this.depthLimit = Infinity;
+          this.nodeDepths = new Map();
 
           const bounds = container.getBoundingClientRect();
           this.width = bounds.width || container.clientWidth || 640;
@@ -897,6 +1011,8 @@
           this.linkIndex.clear();
           this.loadedNodes.clear();
           this.activeNodeId = null;
+          this.focusNodeId = null;
+          this.nodeDepths.clear();
           renderNodeDetails(null);
           this.update();
         }
@@ -909,7 +1025,11 @@
             return existing;
           }
 
-          const nodeCopy = { ...node };
+          const nodeCopy = {
+            ...node,
+            hidden: typeof node.hidden === "boolean" ? node.hidden : false,
+            depth: typeof node.depth === "number" ? node.depth : Infinity,
+          };
           this.nodeIndex.set(nodeCopy.id, nodeCopy);
           this.nodes.push(nodeCopy);
 
@@ -934,6 +1054,7 @@
             sourceId,
             targetId,
             type,
+            hidden: false,
           };
 
           this.linkIndex.set(linkKey, link);
@@ -956,11 +1077,22 @@
         }
 
         setActiveNode(nodeId) {
+          const activeNode = nodeId ? this.nodeIndex.get(nodeId) : null;
+
+          if (!activeNode) {
+            this.activeNodeId = null;
+            this.refreshNodeState();
+            renderNodeDetails(null);
+            return;
+          }
+
           this.activeNodeId = nodeId;
           this.refreshNodeState();
-          const activeNode = nodeId ? this.nodeIndex.get(nodeId) : null;
-          const connectionCount = activeNode ? this.countConnections(nodeId) : 0;
-          renderNodeDetails(activeNode || null, connectionCount);
+          const visibleConnections = this.countConnections(nodeId);
+          const totalConnections = this.countConnections(nodeId, { includeHidden: true });
+          const hiddenConnections = Math.max(0, totalConnections - visibleConnections);
+
+          renderNodeDetails(activeNode, visibleConnections, hiddenConnections);
         }
 
         refreshNodeState() {
@@ -973,17 +1105,214 @@
             .classed("graph-node--active", (d) => d.id === this.activeNodeId);
         }
 
-        countConnections(nodeId) {
+        countConnections(nodeId, options = {}) {
+          if (!nodeId) {
+            return 0;
+          }
+
+          const includeHidden = Boolean(options.includeHidden);
+
           return this.links.reduce((total, link) => {
-            return (
-              total +
-              (link.sourceId === nodeId || link.targetId === nodeId ||
-              (typeof link.source === "object" && link.source.id === nodeId) ||
-              (typeof link.target === "object" && link.target.id === nodeId)
-                ? 1
-                : 0)
-            );
+            if (!includeHidden && link.hidden) {
+              return total;
+            }
+
+            const sourceId = this.getNodeIdFromLink(link, "source");
+            const targetId = this.getNodeIdFromLink(link, "target");
+
+            return total + (sourceId === nodeId || targetId === nodeId ? 1 : 0);
           }, 0);
+        }
+
+        getNodeIdFromLink(link, endpoint) {
+          if (!link) {
+            return null;
+          }
+
+          const endpointValue = link[endpoint];
+
+          if (endpointValue && typeof endpointValue === "object") {
+            if (endpointValue.id != null) {
+              return String(endpointValue.id);
+            }
+
+            if (endpointValue.elementId != null) {
+              return String(endpointValue.elementId);
+            }
+          }
+
+          const fallbackKey = endpoint === "source" ? "sourceId" : "targetId";
+          const fallbackValue = link[fallbackKey];
+
+          if (fallbackValue != null) {
+            return String(fallbackValue);
+          }
+
+          if (typeof endpointValue === "string" || typeof endpointValue === "number") {
+            return String(endpointValue);
+          }
+
+          return null;
+        }
+
+        isNodeHidden(nodeId) {
+          if (!nodeId) {
+            return false;
+          }
+
+          const node = this.nodeIndex.get(nodeId);
+          return node ? Boolean(node.hidden) : false;
+        }
+
+        recalculateDepths() {
+          this.nodeDepths.clear();
+
+          const hasFocus = Boolean(this.focusNodeId && this.nodeIndex.has(this.focusNodeId));
+
+          if (!hasFocus) {
+            this.nodes.forEach((node) => {
+              node.depth = 0;
+              node.hidden = false;
+              this.nodeDepths.set(node.id, 0);
+            });
+            return;
+          }
+
+          const focusId = this.focusNodeId;
+          this.nodeDepths.set(focusId, 0);
+
+          const adjacency = new Map();
+
+          const registerConnection = (from, to) => {
+            if (!adjacency.has(from)) {
+              adjacency.set(from, new Set());
+            }
+            adjacency.get(from).add(to);
+          };
+
+          this.links.forEach((link) => {
+            const sourceId = this.getNodeIdFromLink(link, "source");
+            const targetId = this.getNodeIdFromLink(link, "target");
+
+            if (!sourceId || !targetId) {
+              return;
+            }
+
+            registerConnection(sourceId, targetId);
+            registerConnection(targetId, sourceId);
+          });
+
+          const queue = [focusId];
+          const visited = new Set(queue);
+
+          while (queue.length) {
+            const currentId = queue.shift();
+            const currentDepth = this.nodeDepths.get(currentId) ?? 0;
+            const neighbors = adjacency.get(currentId);
+
+            if (!neighbors) {
+              continue;
+            }
+
+            neighbors.forEach((neighborId) => {
+              if (visited.has(neighborId)) {
+                return;
+              }
+
+              visited.add(neighborId);
+              this.nodeDepths.set(neighborId, currentDepth + 1);
+              queue.push(neighborId);
+            });
+          }
+
+          this.nodes.forEach((node) => {
+            const depth = this.nodeDepths.has(node.id) ? this.nodeDepths.get(node.id) : Infinity;
+            this.nodeDepths.set(node.id, depth);
+            node.depth = depth;
+          });
+        }
+
+        applyDepthLimit() {
+          const hasFocus = Boolean(this.focusNodeId && this.nodeIndex.has(this.focusNodeId));
+          const limit = this.depthLimit;
+          const limitIsFinite = Number.isFinite(limit);
+
+          this.nodes.forEach((node) => {
+            if (!hasFocus || !limitIsFinite) {
+              node.hidden = false;
+              if (!this.nodeDepths.has(node.id)) {
+                this.nodeDepths.set(node.id, 0);
+              }
+              node.depth = this.nodeDepths.get(node.id);
+              return;
+            }
+
+            const depth = this.nodeDepths.get(node.id);
+            const numericDepth = typeof depth === "number" ? depth : Infinity;
+            node.depth = numericDepth;
+            node.hidden = numericDepth > limit;
+          });
+
+          this.links.forEach((link) => {
+            if (!hasFocus || !limitIsFinite) {
+              link.hidden = false;
+              return;
+            }
+
+            const sourceId = this.getNodeIdFromLink(link, "source");
+            const targetId = this.getNodeIdFromLink(link, "target");
+
+            link.hidden = this.isNodeHidden(sourceId) || this.isNodeHidden(targetId);
+          });
+
+          if (this.activeNodeId) {
+            const activeNode = this.nodeIndex.get(this.activeNodeId);
+            if (!activeNode || activeNode.hidden) {
+              if (this.focusNodeId && !this.isNodeHidden(this.focusNodeId)) {
+                this.activeNodeId = this.focusNodeId;
+              } else {
+                this.activeNodeId = null;
+              }
+            }
+          }
+        }
+
+        syncDepths() {
+          this.recalculateDepths();
+          this.applyDepthLimit();
+          this.update();
+
+          if (this.activeNodeId) {
+            this.setActiveNode(this.activeNodeId);
+          } else if (this.focusNodeId && !this.isNodeHidden(this.focusNodeId)) {
+            this.setActiveNode(this.focusNodeId);
+          } else {
+            renderNodeDetails(null);
+          }
+        }
+
+        setFocusNode(nodeId) {
+          this.focusNodeId = nodeId || null;
+          this.syncDepths();
+        }
+
+        setDepthLimit(limit, options = {}) {
+          const parsed = Number(limit);
+          const sanitized = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+
+          if (this.depthLimit === sanitized && !options.force) {
+            return this.depthLimit;
+          }
+
+          this.depthLimit = sanitized;
+
+          if (options.skipSync) {
+            return this.depthLimit;
+          }
+
+          this.syncDepths();
+
+          return this.depthLimit;
         }
 
         setNodeClickHandler(handler) {
@@ -994,9 +1323,12 @@
         update() {
           const d3 = this.d3;
 
+          const visibleNodes = this.nodes.filter((node) => !node.hidden);
+          const visibleLinks = this.links.filter((link) => !link.hidden);
+
           this.linkElements = this.linkGroup
             .selectAll("line.graph-link")
-            .data(this.links, (d) => d.key);
+            .data(visibleLinks, (d) => d.key);
 
           this.linkElements.exit().remove();
 
@@ -1008,7 +1340,7 @@
 
           this.linkLabelElements = this.labelGroup
             .selectAll("text.graph-link-label")
-            .data(this.links, (d) => d.key);
+            .data(visibleLinks, (d) => d.key);
 
           this.linkLabelElements.exit().remove();
 
@@ -1024,7 +1356,7 @@
 
           this.nodeElements = this.nodeGroup
             .selectAll("g.graph-node")
-            .data(this.nodes, (d) => d.id);
+            .data(visibleNodes, (d) => d.id);
 
           this.nodeElements.exit().remove();
 
@@ -1068,18 +1400,19 @@
 
           this.refreshNodeState();
 
-          if (this.nodes.length) {
-            this.simulation.nodes(this.nodes);
-            this.simulation.force("link").links(this.links);
+          if (visibleNodes.length) {
+            this.simulation.nodes(visibleNodes);
+            this.simulation.force("link").links(visibleLinks);
             this.simulation.alpha(0.9).restart();
           } else {
             this.simulation.stop();
           }
-        }
       }
+    }
 
-      graphExplorer = new GraphExplorer(graphContainer);
-      renderNodeDetails(null);
+    graphExplorer = new GraphExplorer(graphContainer);
+    graphExplorer.setDepthLimit(activeHopLimit, { skipSync: true });
+    renderNodeDetails(null);
 
       const loadNeighborsForNode = async (node, options = {}) => {
         const { announceIfLoaded = true } = options;
@@ -1146,15 +1479,28 @@
 
           graphExplorer.markNodeLoaded(nodeId);
           graphExplorer.setActiveNode(nodeId);
-          graphExplorer.update();
+          graphExplorer.syncDepths();
+
+          const visibleConnections = graphExplorer.countConnections(nodeId);
+          const totalConnections = graphExplorer.countConnections(nodeId, { includeHidden: true });
+          const hiddenConnections = Math.max(0, totalConnections - visibleConnections);
 
           if (!newConnections) {
-            setGraphStatus(`No related nodes found for ${displayName}.`);
+            if (hiddenConnections > 0) {
+              setGraphStatus(
+                `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`
+              );
+            } else {
+              setGraphStatus(`No related nodes found for ${displayName}.`);
+            }
           } else {
-            const totalConnections = graphExplorer.countConnections(nodeId);
-            setGraphStatus(
-              `Loaded ${newConnections} connection${newConnections === 1 ? "" : "s"} for ${displayName}. ${totalConnections} total in view.`
-            );
+            let message = `Loaded ${newConnections} connection${newConnections === 1 ? "" : "s"} for ${displayName}. ${visibleConnections} total in view.`;
+
+            if (hiddenConnections > 0) {
+              message += ` ${hiddenConnections} hidden beyond hop limit.`;
+            }
+
+            setGraphStatus(message);
           }
         } catch (error) {
           console.error("Failed to load relationships", error);
@@ -1170,8 +1516,7 @@
         const formatted = formatNode(node);
         graphExplorer.reset();
         graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
-        graphExplorer.update();
-        graphExplorer.setActiveNode(formatted.elementId);
+        graphExplorer.setFocusNode(formatted.elementId);
         setGraphStatus(`Exploring ${labelFallback || formatted.displayName}.`);
 
         loadNeighborsForNode(formatted, { announceIfLoaded: false }).catch((error) => {
