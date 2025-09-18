@@ -762,6 +762,8 @@
           return;
         }
 
+        let firstFocusableRow = null;
+
         records.forEach((record, index) => {
           const node = record.get("n");
           const formattedNode = formatNode(node);
@@ -770,6 +772,10 @@
           row.dataset.elementId = formattedNode.elementId;
           row.tabIndex = 0;
           row.setAttribute("role", "button");
+
+          if (index === 0) {
+            firstFocusableRow = row;
+          }
 
           const indexCell = document.createElement("td");
           indexCell.textContent = String(index + 1);
@@ -806,6 +812,24 @@
 
           nodesBody.appendChild(row);
         });
+
+        if (firstFocusableRow && typeof firstFocusableRow.focus === "function") {
+          const focusRow = () => {
+            try {
+              firstFocusableRow.focus({ preventScroll: true });
+            } catch (error) {
+              firstFocusableRow.focus();
+            }
+          };
+
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => {
+              focusRow();
+            });
+          } else {
+            setTimeout(focusRow, 0);
+          }
+        }
       };
 
       const getNeo4jDriver = () => {
