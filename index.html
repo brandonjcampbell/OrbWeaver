@@ -1076,6 +1076,42 @@
           return this.loadedNodes.has(nodeId);
         }
 
+        getNode(nodeId) {
+          if (nodeId == null) {
+            return null;
+          }
+
+          const id = String(nodeId);
+          return this.nodeIndex.get(id) || null;
+        }
+
+        getNeighborIds(nodeId, options = {}) {
+          if (nodeId == null) {
+            return [];
+          }
+
+          const includeHidden = Boolean(options.includeHidden);
+          const id = String(nodeId);
+          const neighbors = new Set();
+
+          this.links.forEach((link) => {
+            if (!includeHidden && link.hidden) {
+              return;
+            }
+
+            const sourceId = this.getNodeIdFromLink(link, "source");
+            const targetId = this.getNodeIdFromLink(link, "target");
+
+            if (sourceId === id && targetId) {
+              neighbors.add(targetId);
+            } else if (targetId === id && sourceId) {
+              neighbors.add(sourceId);
+            }
+          });
+
+          return Array.from(neighbors);
+        }
+
         setActiveNode(nodeId) {
           const activeNode = nodeId ? this.nodeIndex.get(nodeId) : null;
 
@@ -1415,22 +1451,43 @@
     renderNodeDetails(null);
 
       const loadNeighborsForNode = async (node, options = {}) => {
-        const { announceIfLoaded = true } = options;
+        const {
+          announceIfLoaded = true,
+          setFocus = false,
+          skipEnsure = false,
+          suppressStatus = false,
+          setActive = true,
+        } = options;
+
         const formatted = formatNode(node);
         const nodeId = formatted.elementId;
         const displayName = formatted.displayName;
 
         graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
-        graphExplorer.setActiveNode(nodeId);
+
+        if (setFocus) {
+          graphExplorer.setFocusNode(nodeId);
+        }
+
+        if (setActive) {
+          graphExplorer.setActiveNode(nodeId);
+        }
 
         if (graphExplorer.isNodeLoaded(nodeId)) {
-          if (announceIfLoaded) {
+          if (!skipEnsure) {
+            await ensureNeighborhoodLoaded(nodeId, activeHopLimit);
+          }
+
+          if (announceIfLoaded && !suppressStatus) {
             setGraphStatus(`${displayName} is already expanded.`);
           }
+
           return;
         }
 
-        setGraphStatus(`Loading relationships for ${displayName}…`);
+        if (!suppressStatus) {
+          setGraphStatus(`Loading relationships for ${displayName}…`);
+        }
 
         try {
           const result = await runNeo4jQuery(
@@ -1478,20 +1535,27 @@
           });
 
           graphExplorer.markNodeLoaded(nodeId);
-          graphExplorer.setActiveNode(nodeId);
           graphExplorer.syncDepths();
 
           const visibleConnections = graphExplorer.countConnections(nodeId);
           const totalConnections = graphExplorer.countConnections(nodeId, { includeHidden: true });
           const hiddenConnections = Math.max(0, totalConnections - visibleConnections);
 
+          if (!skipEnsure) {
+            await ensureNeighborhoodLoaded(nodeId, activeHopLimit);
+          }
+
           if (!newConnections) {
             if (hiddenConnections > 0) {
-              setGraphStatus(
-                `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`
-              );
+              if (!suppressStatus) {
+                setGraphStatus(
+                  `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`
+                );
+              }
             } else {
-              setGraphStatus(`No related nodes found for ${displayName}.`);
+              if (!suppressStatus) {
+                setGraphStatus(`No related nodes found for ${displayName}.`);
+              }
             }
           } else {
             let message = `Loaded ${newConnections} connection${newConnections === 1 ? "" : "s"} for ${displayName}. ${visibleConnections} total in view.`;
@@ -1500,11 +1564,74 @@
               message += ` ${hiddenConnections} hidden beyond hop limit.`;
             }
 
-            setGraphStatus(message);
+            if (!suppressStatus) {
+              setGraphStatus(message);
+            }
           }
         } catch (error) {
           console.error("Failed to load relationships", error);
-          setGraphStatus(`Unable to load relationships: ${error.message || error}`, true);
+          if (!suppressStatus) {
+            setGraphStatus(`Unable to load relationships: ${error.message || error}`, true);
+          }
+        }
+      };
+
+      const ensureNeighborhoodLoaded = async (focusNodeId, hopLimit) => {
+        if (!graphExplorer || focusNodeId == null) {
+          return;
+        }
+
+        const parsedLimit = Number(hopLimit);
+        const limit = Number.isFinite(parsedLimit) ? Math.max(0, Math.floor(parsedLimit)) : 0;
+
+        if (limit <= 0) {
+          return;
+        }
+
+        const visited = new Set();
+        const queue = [{ id: String(focusNodeId), depth: 0 }];
+
+        while (queue.length) {
+          const { id, depth } = queue.shift();
+
+          if (!id || visited.has(id)) {
+            continue;
+          }
+
+          visited.add(id);
+
+          const node = graphExplorer.getNode(id);
+
+          if (!node) {
+            continue;
+          }
+
+          if (depth < limit && !graphExplorer.isNodeLoaded(id)) {
+            try {
+              await loadNeighborsForNode(node, {
+                announceIfLoaded: false,
+                setFocus: false,
+                skipEnsure: true,
+                suppressStatus: true,
+                setActive: false,
+              });
+            } catch (error) {
+              console.error(`Failed to pre-load neighborhood for ${id}`, error);
+              continue;
+            }
+          }
+
+          if (depth >= limit) {
+            continue;
+          }
+
+          const neighborIds = graphExplorer.getNeighborIds(id, { includeHidden: true });
+
+          neighborIds.forEach((neighborId) => {
+            if (!visited.has(neighborId)) {
+              queue.push({ id: neighborId, depth: depth + 1 });
+            }
+          });
         }
       };
 
@@ -1529,7 +1656,7 @@
       };
 
       graphExplorer.setNodeClickHandler((node) => {
-        loadNeighborsForNode(node).catch((error) => {
+        loadNeighborsForNode(node, { setFocus: true }).catch((error) => {
           console.error("Failed to expand node", error);
         });
       });
