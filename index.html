@@ -1467,6 +1467,11 @@
           this.refreshNodeState();
         }
 
+        clearLoadedNodes() {
+          this.loadedNodes.clear();
+          this.refreshNodeState();
+        }
+
         isNodeLoaded(nodeId) {
           return this.loadedNodes.has(nodeId);
         }
@@ -1738,6 +1743,7 @@
           }
 
           this.depthLimit = sanitized;
+          this.clearLoadedNodes();
 
           if (options.skipSync) {
             return this.depthLimit;
@@ -1851,7 +1857,6 @@
         const {
           announceIfLoaded = true,
           setFocus = false,
-          skipEnsure = false,
           suppressStatus = false,
           setActive = true,
           allowedNodeType = "",
@@ -1891,10 +1896,6 @@
         }
 
         if (graphExplorer.isNodeLoaded(nodeId)) {
-          if (!skipEnsure) {
-            await ensureNeighborhoodLoaded(nodeId, activeHopLimit, normalizedNodeType);
-          }
-
           if (announceIfLoaded && !suppressStatus) {
             setGraphStatus(`${displayName} is already expanded.`);
           }
@@ -1907,65 +1908,136 @@
         }
 
         try {
+          const depthLimit = Math.max(0, Math.floor(Number.isFinite(activeHopLimit) ? activeHopLimit : 0));
           const result = await runNeo4jQuery(
             `
-              MATCH (n)
-              WHERE elementId(n) = $elementId
-              OPTIONAL MATCH (n)-[r]-(m)
-              RETURN n, r, m
+              MATCH (focus)
+              WHERE elementId(focus) = $elementId
+              WITH focus, toInteger($depth) AS rawDepth
+              WITH focus, CASE WHEN rawDepth IS NULL OR rawDepth < 0 THEN 0 ELSE rawDepth END AS depth
+              MATCH path = (focus)-[*0..depth]-(target)
+              WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRelationships
+              UNWIND range(0, size(pathNodes) - 1) AS idx
+              WITH
+                focus,
+                pathNodes[idx] AS node,
+                CASE WHEN idx = 0 THEN NULL ELSE pathNodes[idx - 1] END AS previousNode,
+                CASE WHEN idx = 0 THEN NULL ELSE pathRelationships[idx - 1] END AS relationship,
+                idx AS depth,
+                elementId(pathNodes[idx]) AS nodeId
+              ORDER BY nodeId, depth
+              WITH focus, nodeId, collect({ node: node, previous: previousNode, relationship: relationship, depth: depth }) AS entries
+              WITH focus, entries[0] AS entry
+              RETURN
+                focus AS root,
+                entry.node AS node,
+                entry.previous AS previousNode,
+                entry.relationship AS relationship,
+                entry.depth AS depth
+              ORDER BY depth, elementId(node)
             `,
-            { elementId: nodeId }
+            { elementId: nodeId, depth: depthLimit }
           );
+
+          const records = Array.isArray(result.records) ? result.records : [];
+
+          if (!records.length) {
+            graphExplorer.markNodeLoaded(nodeId);
+            graphExplorer.syncDepths();
+
+            if (!suppressStatus) {
+              setGraphStatus(`No related nodes found for ${displayName}.`);
+            }
+
+            return;
+          }
 
           let newConnections = 0;
           let filteredByType = 0;
+          const newlyAddedNodeIds = new Set();
 
-          result.records.forEach((record) => {
-            const rootNode = formatNode(record.get("n"));
+          records.forEach((record) => {
+            const rawNode = record.get("node");
+            const rawPrevious = record.get("previousNode");
+            const rawRelationship = record.get("relationship");
+            const depthValue = record.get("depth");
 
-            if (normalizedNodeType && nodeMatchesType(rootNode, normalizedNodeType)) {
-              rootNode.nodeType = normalizedNodeType;
+            if (!rawNode) {
+              return;
             }
 
-            graphExplorer.addOrUpdateNode(rootNode, { skipUpdate: true });
+            const formattedNode = formatNode(rawNode);
 
-            const relatedNode = record.get("m");
-            const relationship = record.get("r");
+            if (normalizedNodeType && !nodeMatchesType(formattedNode, normalizedNodeType)) {
+              filteredByType += 1;
+              return;
+            }
 
-            if (relatedNode) {
-              const formattedNeighbor = formatNode(relatedNode);
+            if (normalizedNodeType) {
+              formattedNode.nodeType = normalizedNodeType;
+            }
 
-              if (normalizedNodeType) {
-                if (!nodeMatchesType(formattedNeighbor, normalizedNodeType)) {
-                  filteredByType += 1;
-                  return;
-                }
+            if (typeof depthValue === "number") {
+              formattedNode.depth = depthValue;
+            }
 
-                if (formattedNeighbor.nodeType !== normalizedNodeType) {
-                  formattedNeighbor.nodeType = normalizedNodeType;
-                }
-              }
+            const existingNode = graphExplorer.getNode(formattedNode.elementId);
+            const storedNode = graphExplorer.addOrUpdateNode(formattedNode, { skipUpdate: true });
 
-              graphExplorer.addOrUpdateNode(formattedNeighbor, { skipUpdate: true });
+            if (!existingNode) {
+              newlyAddedNodeIds.add(formattedNode.elementId);
+            } else if (storedNode && typeof depthValue === "number" && storedNode.depth > depthValue) {
+              storedNode.depth = depthValue;
+            }
 
-              const relationshipType = relationship && relationship.type ? relationship.type : "RELATED";
-              const relationshipId =
-                relationship &&
-                (typeof relationship.elementId === "function"
-                  ? relationship.elementId()
-                  : relationship.elementId);
+            if (!rawRelationship || !rawPrevious) {
+              return;
+            }
 
-              const added = graphExplorer.addLink(
-                rootNode.elementId,
-                formattedNeighbor.elementId,
-                relationshipType,
-                relationshipId || undefined,
-                { skipUpdate: true }
-              );
+            const formattedPrevious = formatNode(rawPrevious);
 
-              if (added) {
-                newConnections += 1;
-              }
+            if (normalizedNodeType && !nodeMatchesType(formattedPrevious, normalizedNodeType)) {
+              filteredByType += 1;
+              return;
+            }
+
+            if (normalizedNodeType) {
+              formattedPrevious.nodeType = normalizedNodeType;
+            }
+
+            if (typeof depthValue === "number") {
+              formattedPrevious.depth = Math.max(0, depthValue - 1);
+            }
+
+            const existingPrevious = graphExplorer.getNode(formattedPrevious.elementId);
+            const storedPrevious = graphExplorer.addOrUpdateNode(formattedPrevious, { skipUpdate: true });
+
+            if (!existingPrevious) {
+              newlyAddedNodeIds.add(formattedPrevious.elementId);
+            } else if (
+              storedPrevious &&
+              typeof formattedPrevious.depth === "number" &&
+              (typeof storedPrevious.depth !== "number" || storedPrevious.depth > formattedPrevious.depth)
+            ) {
+              storedPrevious.depth = formattedPrevious.depth;
+            }
+
+            const relationshipType = formatRelationshipType(rawRelationship.type);
+            const relationshipId =
+              typeof rawRelationship.elementId === "function"
+                ? rawRelationship.elementId()
+                : rawRelationship.elementId;
+
+            const added = graphExplorer.addLink(
+              formattedPrevious.elementId,
+              formattedNode.elementId,
+              relationshipType,
+              relationshipId || undefined,
+              { skipUpdate: true }
+            );
+
+            if (added) {
+              newConnections += 1;
             }
           });
 
@@ -1975,12 +2047,22 @@
           const visibleConnections = graphExplorer.countConnections(nodeId);
           const totalConnections = graphExplorer.countConnections(nodeId, { includeHidden: true });
           const hiddenConnections = Math.max(0, totalConnections - visibleConnections);
+          const newNodeCount = (() => {
+            if (!newlyAddedNodeIds.size) {
+              return 0;
+            }
 
-          if (!skipEnsure) {
-            await ensureNeighborhoodLoaded(nodeId, activeHopLimit, normalizedNodeType);
-          }
+            const normalizedId = String(nodeId);
+            let count = newlyAddedNodeIds.size;
 
-          if (!newConnections) {
+            if (newlyAddedNodeIds.has(normalizedId)) {
+              count -= 1;
+            }
+
+            return Math.max(0, count);
+          })();
+
+          if (!newConnections && newNodeCount === 0) {
             if (hiddenConnections > 0) {
               if (!suppressStatus) {
                 let message = `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`;
@@ -2003,7 +2085,7 @@
               }
             }
           } else {
-            let message = `Loaded ${newConnections} connection${newConnections === 1 ? "" : "s"} for ${displayName}. ${visibleConnections} total in view.`;
+            let message = `Loaded ${newNodeCount} new node${newNodeCount === 1 ? "" : "s"} and ${newConnections} relationship${newConnections === 1 ? "" : "s"} for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view.`;
 
             if (hiddenConnections > 0) {
               message += ` ${hiddenConnections} hidden beyond hop limit.`;
@@ -2022,86 +2104,6 @@
           if (!suppressStatus) {
             setGraphStatus(`Unable to load relationships: ${error.message || error}`, true);
           }
-        }
-      };
-
-      const ensureNeighborhoodLoaded = async (focusNodeId, hopLimit, requiredNodeType = "") => {
-        if (!graphExplorer || focusNodeId == null) {
-          return;
-        }
-
-        const parsedLimit = Number(hopLimit);
-        const limit = Number.isFinite(parsedLimit) ? Math.max(0, Math.floor(parsedLimit)) : 0;
-
-        if (limit <= 0) {
-          return;
-        }
-
-        const focusId = String(focusNodeId);
-        const focusNode = graphExplorer.getNode(focusId);
-        const focusNodeType =
-          normalizeNodeType(requiredNodeType) ||
-          (focusNode ? normalizeNodeType(focusNode.nodeType) : "");
-
-        const visited = new Set();
-        const queue = [{ id: focusId, depth: 0 }];
-
-        while (queue.length) {
-          const { id, depth } = queue.shift();
-
-          if (!id || visited.has(id)) {
-            continue;
-          }
-
-          visited.add(id);
-
-          const node = graphExplorer.getNode(id);
-
-          if (!node) {
-            continue;
-          }
-
-          if (focusNodeType && !nodeMatchesType(node, focusNodeType)) {
-            continue;
-          }
-
-          if (depth < limit && !graphExplorer.isNodeLoaded(id)) {
-            try {
-              await loadNeighborsForNode(node, {
-                announceIfLoaded: false,
-                setFocus: false,
-                skipEnsure: true,
-                suppressStatus: true,
-                setActive: false,
-                allowedNodeType: focusNodeType,
-              });
-            } catch (error) {
-              console.error(`Failed to pre-load neighborhood for ${id}`, error);
-              continue;
-            }
-          }
-
-          if (depth >= limit) {
-            continue;
-          }
-
-          const neighborIds = graphExplorer.getNeighborIds(id, { includeHidden: true });
-
-          neighborIds.forEach((neighborId) => {
-            if (!neighborId || visited.has(neighborId)) {
-              return;
-            }
-
-            if (focusNodeType) {
-              const neighborNode = graphExplorer.getNode(neighborId);
-
-              if (neighborNode && !nodeMatchesType(neighborNode, focusNodeType)) {
-                return;
-              }
-            }
-
-            queue.push({ id: neighborId, depth: depth + 1 });
-          });
         }
       };
 
