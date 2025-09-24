@@ -780,6 +780,92 @@
         nodesBody.appendChild(row);
       };
 
+      const normalizeNodeType = (value) => {
+        if (typeof value !== "string") {
+          return "";
+        }
+
+        return value.trim();
+      };
+
+      const determineNodeType = (node, fallbackLabel = currentLabel) => {
+        if (!node) {
+          return "";
+        }
+
+        const explicitType = normalizeNodeType(node.nodeType);
+        if (explicitType) {
+          return explicitType;
+        }
+
+        const rawLabels = Array.isArray(node.labels) ? node.labels : [];
+        const labels = rawLabels
+          .map((label) => (typeof label === "string" ? label.trim() : ""))
+          .filter((label) => Boolean(label));
+
+        const normalizedFallback = normalizeNodeType(fallbackLabel);
+
+        if (normalizedFallback && labels.some((label) => label === normalizedFallback)) {
+          return normalizedFallback;
+        }
+
+        if (labels.length) {
+          return labels[0];
+        }
+
+        const properties =
+          node.properties && typeof node.properties === "object" ? node.properties : {};
+
+        const propertyCandidates = [properties.nodeType, properties.type];
+
+        for (const candidate of propertyCandidates) {
+          const normalized = normalizeNodeType(candidate);
+          if (normalized) {
+            return normalized;
+          }
+        }
+
+        return "";
+      };
+
+      const nodeMatchesType = (node, requiredType) => {
+        const normalizedRequiredType = normalizeNodeType(requiredType);
+
+        if (!normalizedRequiredType) {
+          return true;
+        }
+
+        if (!node) {
+          return false;
+        }
+
+        if (normalizeNodeType(node.nodeType) === normalizedRequiredType) {
+          return true;
+        }
+
+        const labels = Array.isArray(node.labels) ? node.labels : [];
+        const hasMatchingLabel = labels.some(
+          (label) => normalizeNodeType(label) === normalizedRequiredType
+        );
+
+        if (hasMatchingLabel) {
+          return true;
+        }
+
+        const properties =
+          node.properties && typeof node.properties === "object" ? node.properties : {};
+
+        if (normalizeNodeType(properties.nodeType) === normalizedRequiredType) {
+          return true;
+        }
+
+        if (normalizeNodeType(properties.type) === normalizedRequiredType) {
+          return true;
+        }
+
+        return false;
+      };
+
       const formatNode = (node) => {
         if (!node) {
           throw new Error("Unable to format an undefined node.");
@@ -810,12 +896,15 @@
           tooltipParts.push(`Properties:\n${JSON.stringify(properties, null, 2)}`);
         }
 
+        const nodeType = determineNodeType({ labels, properties });
+
         return {
           id,
           elementId: id,
           labels,
           properties,
           displayName,
+          nodeType,
           tooltip: tooltipParts.join("\n"),
         };
       };
@@ -1176,17 +1265,26 @@
         }
 
         addOrUpdateNode(node, options = {}) {
-          const existing = this.nodeIndex.get(node.id);
+          if (!node || node.id == null) {
+            return null;
+          }
+
+          const normalizedNode = {
+            ...node,
+            nodeType: determineNodeType(node),
+          };
+
+          const existing = this.nodeIndex.get(normalizedNode.id);
 
           if (existing) {
-            Object.assign(existing, node);
+            Object.assign(existing, normalizedNode);
             return existing;
           }
 
           const nodeCopy = {
-            ...node,
-            hidden: typeof node.hidden === "boolean" ? node.hidden : false,
-            depth: typeof node.depth === "number" ? node.depth : Infinity,
+            ...normalizedNode,
+            hidden: typeof normalizedNode.hidden === "boolean" ? normalizedNode.hidden : false,
+            depth: typeof normalizedNode.depth === "number" ? normalizedNode.depth : Infinity,
           };
           this.nodeIndex.set(nodeCopy.id, nodeCopy);
           this.nodes.push(nodeCopy);
@@ -1615,11 +1713,31 @@
           skipEnsure = false,
           suppressStatus = false,
           setActive = true,
+          allowedNodeType = "",
         } = options;
 
         const formatted = formatNode(node);
         const nodeId = formatted.elementId;
         const displayName = formatted.displayName;
+        const normalizedNodeType =
+          normalizeNodeType(allowedNodeType) ||
+          normalizeNodeType(formatted.nodeType) ||
+          normalizeNodeType(determineNodeType(node));
+
+        if (normalizedNodeType && !nodeMatchesType(formatted, normalizedNodeType)) {
+          if (!suppressStatus) {
+            setGraphStatus(
+              `${displayName} cannot be expanded because it is not a ${normalizedNodeType} node.`,
+              true
+            );
+          }
+
+          return;
+        }
+
+        if (normalizedNodeType && nodeMatchesType(formatted, normalizedNodeType)) {
+          formatted.nodeType = normalizedNodeType;
+        }
 
         graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
 
@@ -1633,7 +1751,7 @@
 
         if (graphExplorer.isNodeLoaded(nodeId)) {
           if (!skipEnsure) {
-            await ensureNeighborhoodLoaded(nodeId, activeHopLimit);
+            await ensureNeighborhoodLoaded(nodeId, activeHopLimit, normalizedNodeType);
           }
 
           if (announceIfLoaded && !suppressStatus) {
@@ -1659,9 +1777,15 @@
           );
 
           let newConnections = 0;
+          let filteredByType = 0;
 
           result.records.forEach((record) => {
             const rootNode = formatNode(record.get("n"));
+
+            if (normalizedNodeType && nodeMatchesType(rootNode, normalizedNodeType)) {
+              rootNode.nodeType = normalizedNodeType;
+            }
+
             graphExplorer.addOrUpdateNode(rootNode, { skipUpdate: true });
 
             const relatedNode = record.get("m");
@@ -1669,6 +1793,18 @@
 
             if (relatedNode) {
               const formattedNeighbor = formatNode(relatedNode);
+
+              if (normalizedNodeType) {
+                if (!nodeMatchesType(formattedNeighbor, normalizedNodeType)) {
+                  filteredByType += 1;
+                  return;
+                }
+
+                if (formattedNeighbor.nodeType !== normalizedNodeType) {
+                  formattedNeighbor.nodeType = normalizedNodeType;
+                }
+              }
+
               graphExplorer.addOrUpdateNode(formattedNeighbor, { skipUpdate: true });
 
               const relationshipType = relationship && relationship.type ? relationship.type : "RELATED";
@@ -1700,14 +1836,24 @@
           const hiddenConnections = Math.max(0, totalConnections - visibleConnections);
 
           if (!skipEnsure) {
-            await ensureNeighborhoodLoaded(nodeId, activeHopLimit);
+            await ensureNeighborhoodLoaded(nodeId, activeHopLimit, normalizedNodeType);
           }
 
           if (!newConnections) {
             if (hiddenConnections > 0) {
               if (!suppressStatus) {
+                let message = `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`;
+
+                if (normalizedNodeType && filteredByType > 0) {
+                  message += ` Ignored ${filteredByType} connection${filteredByType === 1 ? "" : "s"} with different node types.`;
+                }
+
+                setGraphStatus(message);
+              }
+            } else if (normalizedNodeType && filteredByType > 0) {
+              if (!suppressStatus) {
                 setGraphStatus(
-                  `No new visible nodes for ${displayName}. ${visibleConnections} connection${visibleConnections === 1 ? "" : "s"} in view, ${hiddenConnections} hidden beyond hop limit.`
+                  `No ${normalizedNodeType} dependencies added for ${displayName}. Ignored ${filteredByType} connection${filteredByType === 1 ? "" : "s"} with different node types.`
                 );
               }
             } else {
@@ -1722,6 +1868,10 @@
               message += ` ${hiddenConnections} hidden beyond hop limit.`;
             }
 
+            if (normalizedNodeType && filteredByType > 0) {
+              message += ` Ignored ${filteredByType} connection${filteredByType === 1 ? "" : "s"} with different node types.`;
+            }
+
             if (!suppressStatus) {
               setGraphStatus(message);
             }
@@ -1734,7 +1884,7 @@
         }
       };
 
-      const ensureNeighborhoodLoaded = async (focusNodeId, hopLimit) => {
+      const ensureNeighborhoodLoaded = async (focusNodeId, hopLimit, requiredNodeType = "") => {
         if (!graphExplorer || focusNodeId == null) {
           return;
         }
@@ -1746,8 +1896,14 @@
           return;
         }
 
+        const focusId = String(focusNodeId);
+        const focusNode = graphExplorer.getNode(focusId);
+        const focusNodeType =
+          normalizeNodeType(requiredNodeType) ||
+          (focusNode ? normalizeNodeType(focusNode.nodeType) : "");
+
         const visited = new Set();
-        const queue = [{ id: String(focusNodeId), depth: 0 }];
+        const queue = [{ id: focusId, depth: 0 }];
 
         while (queue.length) {
           const { id, depth } = queue.shift();
@@ -1764,6 +1920,10 @@
             continue;
           }
 
+          if (focusNodeType && !nodeMatchesType(node, focusNodeType)) {
+            continue;
+          }
+
           if (depth < limit && !graphExplorer.isNodeLoaded(id)) {
             try {
               await loadNeighborsForNode(node, {
@@ -1772,6 +1932,7 @@
                 skipEnsure: true,
                 suppressStatus: true,
                 setActive: false,
+                allowedNodeType: focusNodeType,
               });
             } catch (error) {
               console.error(`Failed to pre-load neighborhood for ${id}`, error);
@@ -1786,9 +1947,19 @@
           const neighborIds = graphExplorer.getNeighborIds(id, { includeHidden: true });
 
           neighborIds.forEach((neighborId) => {
-            if (!visited.has(neighborId)) {
-              queue.push({ id: neighborId, depth: depth + 1 });
+            if (!neighborId || visited.has(neighborId)) {
+              return;
             }
+
+            if (focusNodeType) {
+              const neighborNode = graphExplorer.getNode(neighborId);
+
+              if (neighborNode && !nodeMatchesType(neighborNode, focusNodeType)) {
+                return;
+              }
+            }
+
+            queue.push({ id: neighborId, depth: depth + 1 });
           });
         }
       };
@@ -1799,12 +1970,22 @@
         }
 
         const formatted = formatNode(node);
+        const rootNodeType =
+          normalizeNodeType(formatted.nodeType) || normalizeNodeType(determineNodeType(node));
+
+        if (rootNodeType && nodeMatchesType(formatted, rootNodeType)) {
+          formatted.nodeType = rootNodeType;
+        }
+
         graphExplorer.reset();
         graphExplorer.addOrUpdateNode(formatted, { skipUpdate: true });
         graphExplorer.setFocusNode(formatted.elementId);
         setGraphStatus(`Exploring ${labelFallback || formatted.displayName}.`);
 
-        loadNeighborsForNode(formatted, { announceIfLoaded: false }).catch((error) => {
+        loadNeighborsForNode(formatted, {
+          announceIfLoaded: false,
+          allowedNodeType: rootNodeType,
+        }).catch((error) => {
           console.error("Failed to initialize graph", error);
         });
 
@@ -1814,7 +1995,9 @@
       };
 
       graphExplorer.setNodeClickHandler((node) => {
-        loadNeighborsForNode(node, { setFocus: true }).catch((error) => {
+        const nodeType = node ? normalizeNodeType(node.nodeType) : "";
+
+        loadNeighborsForNode(node, { setFocus: true, allowedNodeType: nodeType }).catch((error) => {
           console.error("Failed to expand node", error);
         });
       });
