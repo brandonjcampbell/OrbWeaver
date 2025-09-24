@@ -118,6 +118,45 @@
       white-space: nowrap;
     }
 
+    .label-control {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      min-width: min(18rem, 40vw);
+    }
+
+    .label-control label {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--color-primary-dark);
+    }
+
+    .label-control select {
+      appearance: none;
+      border-radius: 999px;
+      border: 1px solid var(--color-border);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--color-primary-dark);
+      font: inherit;
+      padding: 0.45rem 2.5rem 0.45rem 0.85rem;
+      cursor: pointer;
+      box-shadow: inset 0 2px 4px rgba(17, 58, 30, 0.08);
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    .label-control select:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+      border-color: rgba(31, 97, 43, 0.45);
+      box-shadow: 0 0 0 4px rgba(125, 220, 75, 0.18);
+    }
+
+    .label-control select:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+      box-shadow: none;
+    }
+
     button {
       border: none;
       background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
@@ -198,6 +237,11 @@
 
     tbody tr[data-action="inspect"]:hover {
       transform: translateX(2px);
+    }
+
+    tbody tr.is-selected {
+      background: rgba(125, 220, 75, 0.24);
+      box-shadow: inset 0 0 0 2px rgba(31, 97, 43, 0.35);
     }
 
     tbody tr[data-action="inspect"]:focus-visible {
@@ -425,6 +469,10 @@
         font-size: 1.45rem;
       }
 
+      .label-control {
+        width: 100%;
+      }
+
       table {
         font-size: 0.85rem;
       }
@@ -463,7 +511,13 @@
 
   <main>
     <section class="controls">
-      <button id="reload">Reload nodes</button>
+      <button id="reload">Reload labels</button>
+      <div class="label-control">
+        <label for="labelSelect">Node label</label>
+        <select id="labelSelect" name="labelSelect" aria-label="Select a node label">
+          <option value="" disabled selected>Select a label…</option>
+        </select>
+      </div>
       <div class="hop-control">
         <label for="hopLimit">Visible hops</label>
         <input
@@ -484,7 +538,7 @@
       <div class="graph-header">
         <h2>Graph explorer</h2>
         <div id="graphStatus" role="status" aria-live="polite">
-          Select a node from the table to explore its relationships.
+          Select a label and node to explore its relationships.
         </div>
       </div>
       <div class="graph-body">
@@ -522,7 +576,7 @@
         </thead>
         <tbody id="nodesBody">
           <tr class="empty-state">
-            <td colspan="4">Click "Reload nodes" to view the first 100 nodes in the database.</td>
+            <td colspan="4">Select a label to view starting nodes.</td>
           </tr>
         </tbody>
       </table>
@@ -547,6 +601,7 @@
       };
 
       const reloadButton = document.getElementById("reload");
+      const labelSelect = document.getElementById("labelSelect");
       const statusElement = document.getElementById("status");
       const nodesBody = document.getElementById("nodesBody");
       const graphContainer = document.getElementById("graphContainer");
@@ -556,6 +611,9 @@
       const hopLimitSummary = document.getElementById("hopLimitSummary");
       const defaultHopLimit = 2;
       let activeHopLimit = defaultHopLimit;
+      const reloadDefaultLabel = "Reload labels";
+      let selectedRow = null;
+      let currentLabel = "";
 
       const defaultNodeDetailsMessage = "Select a node from the table or graph to view its metadata.";
       let graphExplorer;
@@ -685,23 +743,39 @@
         nodeDetails.appendChild(list);
       };
 
-      const setLoading = (isLoading) => {
-        reloadButton.disabled = isLoading;
-        reloadButton.textContent = isLoading ? "Loading…" : "Reload nodes";
+      const setLoading = (isLoading, options = {}) => {
+        const { buttonText, disableLabelSelect = true } = options;
+
+        if (reloadButton) {
+          reloadButton.disabled = isLoading;
+          reloadButton.textContent = isLoading
+            ? buttonText || "Loading…"
+            : reloadDefaultLabel;
+        }
+
+        if (labelSelect && disableLabelSelect) {
+          labelSelect.disabled = isLoading;
+        }
       };
 
       const clearTable = () => {
+        clearSelectedRow();
+
+        if (!nodesBody) {
+          return;
+        }
+
         while (nodesBody.firstChild) {
           nodesBody.removeChild(nodesBody.firstChild);
         }
       };
 
-      const renderEmptyState = () => {
+      const renderEmptyState = (message = "No nodes were returned by the query.") => {
         const row = document.createElement("tr");
         row.className = "empty-state";
         const cell = document.createElement("td");
         cell.colSpan = 4;
-        cell.textContent = "No nodes were returned by the query.";
+        cell.textContent = message;
         row.appendChild(cell);
         nodesBody.appendChild(row);
       };
@@ -755,17 +829,59 @@
         return formatted || "RELATED";
       };
 
-      const renderNodes = (records) => {
+      const clearSelectedRow = () => {
+        if (!selectedRow) {
+          return;
+        }
+
+        selectedRow.classList.remove("is-selected");
+        selectedRow.setAttribute("aria-pressed", "false");
+        selectedRow = null;
+      };
+
+      const selectRow = (row, node, labelFallback, options = {}) => {
+        if (!row || !node) {
+          return;
+        }
+
+        const { focusRow = true } = options;
+
+        if (selectedRow && selectedRow !== row) {
+          selectedRow.classList.remove("is-selected");
+          selectedRow.setAttribute("aria-pressed", "false");
+        }
+
+        selectedRow = row;
+        selectedRow.classList.add("is-selected");
+        selectedRow.setAttribute("aria-pressed", "true");
+
+        if (focusRow && typeof selectedRow.focus === "function") {
+          try {
+            selectedRow.focus({ preventScroll: true });
+          } catch (error) {
+            selectedRow.focus();
+          }
+        }
+
+        openGraphWithRoot(node, labelFallback);
+      };
+
+      const renderNodes = (records, options = {}) => {
         clearTable();
 
-        if (!records.length) {
+        const safeRecords = Array.isArray(records) ? records : [];
+
+        if (!safeRecords.length) {
           renderEmptyState();
           return;
         }
 
-        let firstFocusableRow = null;
+        const { autoSelectFirst = false, preferredElementId = null } = options;
 
-        records.forEach((record, index) => {
+        let firstFocusableRow = null;
+        let preferredRow = null;
+
+        safeRecords.forEach((record, index) => {
           const node = record.get("n");
           const formattedNode = formatNode(node);
           const row = document.createElement("tr");
@@ -773,9 +889,14 @@
           row.dataset.elementId = formattedNode.elementId;
           row.tabIndex = 0;
           row.setAttribute("role", "button");
+          row.setAttribute("aria-pressed", "false");
 
           if (index === 0) {
             firstFocusableRow = row;
+          }
+
+          if (preferredElementId && formattedNode.elementId === preferredElementId) {
+            preferredRow = row;
           }
 
           const indexCell = document.createElement("td");
@@ -798,9 +919,10 @@
           row.appendChild(propertiesCell);
 
           row.__neo4jNode = node;
+          row.__displayName = formattedNode.displayName;
 
           const activateRow = () => {
-            openGraphWithRoot(row.__neo4jNode, formattedNode.displayName);
+            selectRow(row, row.__neo4jNode, row.__displayName);
           };
 
           row.addEventListener("click", activateRow);
@@ -813,6 +935,15 @@
 
           nodesBody.appendChild(row);
         });
+
+        const rowToSelect = preferredRow || (autoSelectFirst ? firstFocusableRow : null);
+
+        if (rowToSelect && rowToSelect.__neo4jNode) {
+          selectRow(rowToSelect, rowToSelect.__neo4jNode, rowToSelect.__displayName, {
+            focusRow: true,
+          });
+          return;
+        }
 
         if (firstFocusableRow && typeof firstFocusableRow.focus === "function") {
           const focusRow = () => {
@@ -830,6 +961,8 @@
           } else {
             setTimeout(focusRow, 0);
           }
+
+          setGraphStatus("Select a node from the table to explore its relationships.");
         }
       };
 
@@ -1686,32 +1819,208 @@
         });
       });
 
-      const fetchNodes = async () => {
-        setLoading(true);
-        setStatus("Connecting to Neo4j Aura…");
+      const quoteLabel = (label) => {
+        if (typeof label !== "string") {
+          throw new Error("Label must be a string.");
+        }
+
+        const trimmed = label.trim();
+
+        if (!trimmed) {
+          throw new Error("Label cannot be empty.");
+        }
+
+        return `\`${trimmed.replace(/`/g, "``")}\``;
+      };
+
+      const populateLabelOptions = (labels, previousSelection = "") => {
+        if (!labelSelect) {
+          return "";
+        }
+
+        labelSelect.innerHTML = "";
+
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = labels.length ? "Select a label…" : "No labels found";
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        labelSelect.appendChild(placeholder);
+
+        let restoredSelection = "";
+
+        labels.forEach((label) => {
+          const option = document.createElement("option");
+          option.value = label;
+          option.textContent = label;
+
+          if (!restoredSelection && previousSelection && previousSelection === label) {
+            option.selected = true;
+            restoredSelection = label;
+            placeholder.selected = false;
+          }
+
+          labelSelect.appendChild(option);
+        });
+
+        if (!restoredSelection) {
+          labelSelect.value = "";
+        }
+
+        labelSelect.disabled = !labels.length;
+
+        return restoredSelection;
+      };
+
+      const fetchNodesForLabel = async (label, options = {}) => {
+        const { autoSelectFirst = true } = options;
+
+        const rawLabel = typeof label === "string" ? label : "";
+        const trimmedLabel = rawLabel.trim();
+
+        if (!trimmedLabel) {
+          currentLabel = "";
+          clearTable();
+          renderEmptyState("Select a label to view starting nodes.");
+          setGraphStatus("Select a label and node to explore its relationships.");
+          return;
+        }
+
+        currentLabel = trimmedLabel;
+
+        if (labelSelect && labelSelect.value !== trimmedLabel) {
+          labelSelect.value = trimmedLabel;
+        }
+
+        clearTable();
+        renderEmptyState(`Loading ${trimmedLabel} nodes…`);
+        setStatus(`Loading ${trimmedLabel} nodes…`);
+        setGraphStatus(`Loading nodes for ${trimmedLabel}…`);
+
+        setLoading(true, { buttonText: "Loading nodes…" });
 
         try {
-          const result = await runNeo4jQuery("MATCH (n) RETURN n LIMIT 100");
-          renderNodes(result.records);
-          setStatus(`Fetched ${result.records.length} node${result.records.length === 1 ? "" : "s"}.`);
+          const quotedLabel = quoteLabel(trimmedLabel);
+          const result = await runNeo4jQuery(
+            `MATCH (n:${quotedLabel}) RETURN n ORDER BY id(n) LIMIT 100`
+          );
+          const records = Array.isArray(result.records) ? result.records : [];
+
+          if (!records.length) {
+            setStatus(`No ${trimmedLabel} nodes found.`);
+            clearTable();
+            renderEmptyState(`No nodes found with label ${trimmedLabel}.`);
+            graphExplorer.reset();
+            setGraphStatus(
+              `No starting nodes found for ${trimmedLabel}. Choose a different label.`
+            );
+            return;
+          }
+
+          renderNodes(records, { autoSelectFirst });
+          setStatus(
+            `Loaded ${records.length} ${trimmedLabel} node${records.length === 1 ? "" : "s"}.`
+          );
         } catch (error) {
-          console.error("Failed to fetch nodes", error);
-          setStatus(`Unable to load nodes: ${error.message || error}`, true);
-          renderEmptyState();
-          setGraphStatus("Select a node from the table to explore its relationships.");
+          console.error(`Failed to load nodes for ${trimmedLabel}`, error);
+          setStatus(`Unable to load ${trimmedLabel} nodes: ${error.message || error}`, true);
+          graphExplorer.reset();
+          clearTable();
+          renderEmptyState(`Unable to load nodes for ${trimmedLabel}.`);
+          setGraphStatus(
+            `Unable to load nodes for ${trimmedLabel}. Please try again.`,
+            true
+          );
         } finally {
-          setLoading(false);
+          setLoading(false, { disableLabelSelect: false });
+          if (labelSelect && labelSelect.options.length > 0) {
+            labelSelect.disabled = false;
+          }
         }
       };
 
+      const fetchLabels = async () => {
+        setLoading(true, { buttonText: "Loading labels…" });
+        setStatus("Loading labels…");
+
+        const previousSelection = labelSelect ? labelSelect.value : "";
+        let labels = [];
+        let restoredSelection = "";
+
+        try {
+          const result = await runNeo4jQuery(
+            "CALL db.labels() YIELD label RETURN label ORDER BY label"
+          );
+          const rawLabels = Array.isArray(result.records) ? result.records : [];
+          const normalized = rawLabels
+            .map((record) => {
+              try {
+                const value = record.get("label");
+                return typeof value === "string" ? value.trim() : "";
+              } catch (error) {
+                return "";
+              }
+            })
+            .filter((value) => Boolean(value));
+          labels = Array.from(new Set(normalized));
+          restoredSelection = populateLabelOptions(labels, previousSelection);
+
+          if (labels.length) {
+            setStatus(
+              `Loaded ${labels.length} label${labels.length === 1 ? "" : "s"}. Select a label to view nodes.`
+            );
+          } else {
+            setStatus("No labels found in the database.");
+          }
+        } catch (error) {
+          console.error("Failed to load labels", error);
+          setStatus(`Unable to load labels: ${error.message || error}`, true);
+          clearTable();
+          renderEmptyState("Unable to load labels. Please try again.");
+          setGraphStatus("Unable to load labels. Retry after checking the connection.");
+          if (labelSelect) {
+            labelSelect.disabled = true;
+          }
+          currentLabel = "";
+          return;
+        } finally {
+          setLoading(false, { disableLabelSelect: false });
+        }
+
+        if (!labels.length) {
+          currentLabel = "";
+          graphExplorer.reset();
+          renderEmptyState("No labels found in the database.");
+          setGraphStatus("No labels available. Add nodes to explore their relationships.");
+          return;
+        }
+
+        if (restoredSelection) {
+          await fetchNodesForLabel(restoredSelection, { autoSelectFirst: true });
+          return;
+        }
+
+        currentLabel = "";
+        graphExplorer.reset();
+        clearTable();
+        renderEmptyState("Select a label to view starting nodes.");
+        setGraphStatus("Select a label and node to explore its relationships.");
+      };
+
       reloadButton.addEventListener("click", () => {
-        fetchNodes();
+        fetchLabels();
       });
 
+      if (labelSelect) {
+        labelSelect.addEventListener("change", (event) => {
+          fetchNodesForLabel(event.target.value, { autoSelectFirst: true });
+        });
+      }
+
       if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", fetchNodes, { once: true });
+        document.addEventListener("DOMContentLoaded", fetchLabels, { once: true });
       } else {
-        fetchNodes();
+        fetchLabels();
       }
     })();
   </script>
