@@ -423,11 +423,12 @@
     }
 
     .graph-node circle {
-      fill: var(--color-primary);
       stroke: rgba(255, 255, 255, 0.9);
       stroke-width: 2.2px;
       filter: drop-shadow(0 12px 24px rgba(21, 74, 33, 0.28));
-      transition: transform 0.2s ease, fill 0.2s ease;
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: transform 0.2s ease, filter 0.2s ease, stroke-width 0.2s ease;
     }
 
     .graph-node text {
@@ -443,15 +444,24 @@
 
     .graph-node:hover circle,
     .graph-node:focus-visible circle {
-      fill: var(--color-accent-dark);
+      transform: scale(1.05);
+      filter: drop-shadow(0 16px 32px rgba(21, 74, 33, 0.34));
     }
 
     .graph-node--expanded circle {
-      fill: #2a7b3c;
+      stroke-width: 2.8px;
     }
 
     .graph-node--active circle {
-      fill: var(--color-accent);
+      stroke: var(--color-accent);
+      stroke-width: 3px;
+    }
+
+    .graph-node--focus circle {
+      stroke: var(--color-accent);
+      stroke-width: 3.4px;
+      filter: drop-shadow(0 18px 40px rgba(21, 74, 33, 0.32));
+      transform: scale(1.08);
     }
 
     @media (max-width: 720px) {
@@ -1122,12 +1132,26 @@
           this.loadedNodes = new Set();
           this.activeNodeId = null;
           this.focusNodeId = null;
+          this.pinnedFocusId = null;
           this.depthLimit = Infinity;
           this.nodeDepths = new Map();
 
           const bounds = container.getBoundingClientRect();
           this.width = bounds.width || container.clientWidth || 640;
           this.height = bounds.height || container.clientHeight || 480;
+
+          const computedStyles = window.getComputedStyle(document.documentElement);
+          this.baseNodeColor = this.resolveCssColor("--color-primary", "#1f612b", computedStyles);
+          this.farthestNodeColor = this.resolveCssColor(
+            "--color-surface-strong",
+            "#f4ffe6",
+            computedStyles
+          );
+          this.depthColorStep = 0.18;
+          this.nodeColorInterpolator = d3.interpolateLab(
+            this.baseNodeColor,
+            this.farthestNodeColor
+          );
 
           this.svg = d3
             .select(container)
@@ -1166,6 +1190,9 @@
           this.dragBehavior = d3
             .drag()
             .on("start", (event, d) => {
+              if (d && d.id === this.focusNodeId) {
+                return;
+              }
               if (!event.active) {
                 this.simulation.alphaTarget(0.3).restart();
               }
@@ -1173,10 +1200,16 @@
               d.fy = d.y;
             })
             .on("drag", (event, d) => {
+              if (d && d.id === this.focusNodeId) {
+                return;
+              }
               d.fx = event.x;
               d.fy = event.y;
             })
             .on("end", (event, d) => {
+              if (d && d.id === this.focusNodeId) {
+                return;
+              }
               if (!event.active) {
                 this.simulation.alphaTarget(0);
               }
@@ -1251,6 +1284,111 @@
           this.update();
         }
 
+        resolveCssColor(variableName, fallback, styles) {
+          const styleSource = styles || window.getComputedStyle(document.documentElement);
+          const { d3 } = this;
+
+          if (styleSource && typeof styleSource.getPropertyValue === "function") {
+            const rawValue = styleSource.getPropertyValue(variableName);
+
+            if (rawValue) {
+              const parsed = d3.color(rawValue.trim());
+
+              if (parsed) {
+                const rgb = d3.rgb(parsed);
+                return rgb.formatHex();
+              }
+            }
+          }
+
+          const fallbackColor = d3.color(fallback);
+
+          if (fallbackColor) {
+            return d3.rgb(fallbackColor).formatHex();
+          }
+
+          return fallback;
+        }
+
+        getNodeFillColor(node) {
+          if (!this.nodeColorInterpolator || !this.focusNodeId) {
+            return this.baseNodeColor;
+          }
+
+          const depthValue = node && typeof node.depth === "number" ? node.depth : Infinity;
+
+          if (!Number.isFinite(depthValue)) {
+            return this.nodeColorInterpolator(1);
+          }
+
+          const clampedDepth = Math.max(0, depthValue);
+          const ratio = Math.min(1, clampedDepth * this.depthColorStep);
+          return this.nodeColorInterpolator(ratio);
+        }
+
+        applyNodeStyling() {
+          if (!this.nodeElements) {
+            return;
+          }
+
+          const focusId = this.focusNodeId ? String(this.focusNodeId) : null;
+
+          if (this.pinnedFocusId && (!focusId || this.pinnedFocusId !== focusId)) {
+            const previousFocus = this.nodeIndex.get(this.pinnedFocusId);
+
+            if (previousFocus) {
+              previousFocus.fx = null;
+              previousFocus.fy = null;
+              previousFocus.vx = 0;
+              previousFocus.vy = 0;
+            }
+
+            this.pinnedFocusId = null;
+          }
+
+          let focusNode = null;
+
+          if (focusId) {
+            const candidate = this.nodeIndex.get(focusId);
+
+            if (candidate && !candidate.hidden) {
+              focusNode = candidate;
+            } else if (this.pinnedFocusId) {
+              const previousFocus = this.nodeIndex.get(this.pinnedFocusId);
+
+              if (previousFocus) {
+                previousFocus.fx = null;
+                previousFocus.fy = null;
+                previousFocus.vx = 0;
+                previousFocus.vy = 0;
+              }
+
+              this.pinnedFocusId = null;
+            }
+          }
+
+          if (!focusNode) {
+            this.nodeElements.classed("graph-node--focus", false);
+            this.nodeElements.select("circle").style("fill", (d) => this.getNodeFillColor(d));
+            return;
+          }
+
+          const centerX = this.width / 2;
+          const centerY = this.height / 2;
+
+          focusNode.fx = centerX;
+          focusNode.fy = centerY;
+          focusNode.x = centerX;
+          focusNode.y = centerY;
+          focusNode.vx = 0;
+          focusNode.vy = 0;
+
+          this.pinnedFocusId = focusId;
+
+          this.nodeElements.classed("graph-node--focus", (d) => d.id === focusId);
+          this.nodeElements.select("circle").style("fill", (d) => this.getNodeFillColor(d));
+        }
+
         reset() {
           this.nodes.length = 0;
           this.links.length = 0;
@@ -1259,6 +1397,7 @@
           this.loadedNodes.clear();
           this.activeNodeId = null;
           this.focusNodeId = null;
+          this.pinnedFocusId = null;
           this.nodeDepths.clear();
           renderNodeDetails(null);
           this.update();
@@ -1395,6 +1534,8 @@
           this.nodeElements
             .classed("graph-node--expanded", (d) => this.loadedNodes.has(d.id))
             .classed("graph-node--active", (d) => d.id === this.activeNodeId);
+
+          this.applyNodeStyling();
         }
 
         countConnections(nodeId, options = {}) {
@@ -1584,7 +1725,7 @@
         }
 
         setFocusNode(nodeId) {
-          this.focusNodeId = nodeId || null;
+          this.focusNodeId = nodeId != null ? String(nodeId) : null;
           this.syncDepths();
         }
 
