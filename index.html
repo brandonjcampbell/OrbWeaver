@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.4</h1>
+      <h1>Neo4j Node Explorer v1.5</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1909,35 +1909,36 @@
 
         try {
           const depthLimit = Math.max(0, Math.floor(Number.isFinite(activeHopLimit) ? activeHopLimit : 0));
-          const result = await runNeo4jQuery(
-            `
-             MATCH (focus)
-WHERE elementId(focus) = $elementId
-MATCH path = (focus)-[*0..$depth]-(target)
-WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRels
-UNWIND range(0, size(pathNodes) - 1) AS idx
-WITH
-  focus,
-  pathNodes[idx]                                                    AS node,
-  CASE WHEN idx = 0 THEN NULL ELSE pathNodes[idx - 1]   END        AS previousNode,
-  CASE WHEN idx = 0 THEN NULL ELSE pathRels[idx - 1]    END        AS rel,
-  idx                                                               AS pathDepth,
-  elementId(pathNodes[idx])                                         AS nodeId
-ORDER BY nodeId, pathDepth
-WITH focus, nodeId, collect({ node: node, previous: previousNode, relationship: rel, depth: pathDepth }) AS entries
-WITH focus, entries[0] AS entry
-RETURN
-  focus            AS root,
-  entry.node       AS node,
-  entry.previous   AS previousNode,
-  entry.relationship AS relationship,
-  entry.depth      AS depth
-ORDER BY depth, elementId(node)
 
 
-            `,
-            { elementId: nodeId, depth: depthLimit }
-          );
+          const query = `
+  MATCH (focus)
+  WHERE elementId(focus) = $elementId
+  MATCH path = (focus)-[*0..${parseInt(depth)}]-(target)
+  WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRels
+  UNWIND range(0, size(pathNodes) - 1) AS idx
+  WITH
+    focus,
+    pathNodes[idx]                                              AS node,
+    CASE WHEN idx = 0 THEN NULL ELSE pathNodes[idx - 1] END    AS previousNode,
+    CASE WHEN idx = 0 THEN NULL ELSE pathRels[idx - 1]  END    AS rel,
+    idx                                                         AS pathDepth,
+    elementId(pathNodes[idx])                                   AS nodeId
+  ORDER BY nodeId, pathDepth
+  WITH focus, nodeId, collect({ node: node, previous: previousNode, relationship: rel, depth: pathDepth }) AS entries
+  WITH focus, entries[0] AS entry
+  RETURN
+    focus              AS root,
+    entry.node         AS node,
+    entry.previous     AS previousNode,
+    entry.relationship AS relationship,
+    entry.depth        AS depth
+  ORDER BY depth, elementId(node)
+`;
+
+var result = session.run(query, { elementId });  // depth is now a literal, not a param
+          
+
 
           const records = Array.isArray(result.records) ? result.records : [];
 
