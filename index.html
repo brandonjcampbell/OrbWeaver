@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.7</h1>
+      <h1>Neo4j Node Explorer v1.8</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -528,7 +528,7 @@
           <option value="" disabled selected>Select a label…</option>
         </select>
       </div>
-      <div class="hop-control">
+      <div class="hop-control" style="display:none">
         <label for="hopLimit">Visible hops</label>
         <input
           type="number"
@@ -1909,13 +1909,10 @@
 
         try {
           const depthLimit = Math.max(0, Math.floor(Number.isFinite(activeHopLimit) ? activeHopLimit : 0));
-
-
-          const query = `
-  WITH $depth as depth
+const query = `
   MATCH (focus)
   WHERE elementId(focus) = $elementId
-  MATCH path = (focus)-[*0..depth}]-(target)
+  MATCH path = (focus)-[*0..${depthLimit}]-(target)
   WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRels
   UNWIND range(0, size(pathNodes) - 1) AS idx
   WITH
@@ -1936,9 +1933,8 @@
     entry.depth        AS depth
   ORDER BY depth, elementId(node)
 `;
-var depth = parseInt(depthLimit)
-const result = await runNeo4jQuery(query, { elementId,  depth});  // depth is now a literal, not a param
-          
+
+const result = await runNeo4jQuery(query, { elementId });
 
 
           const records = Array.isArray(result.records) ? result.records : [];
