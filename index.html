@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.8</h1>
+      <h1>Neo4j Node Explorer v1.9</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1909,6 +1909,7 @@
 
         try {
           const depthLimit = Math.max(0, Math.floor(Number.isFinite(activeHopLimit) ? activeHopLimit : 0));
+          const elementID = nodeId;
 const query = `
   MATCH (focus)
   WHERE elementId(focus) = $elementId
