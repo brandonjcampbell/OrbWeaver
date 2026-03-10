@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.9</h1>
+      <h1>Neo4j Node Explorer v1.10</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1935,7 +1935,7 @@ const query = `
   ORDER BY depth, elementId(node)
 `;
 
-const result = await runNeo4jQuery(query, { elementId });
+const result = await runNeo4jQuery(query, { elementId:nodeId });
 
 
           const records = Array.isArray(result.records) ? result.records : [];
