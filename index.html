@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.5</h1>
+      <h1>Neo4j Node Explorer v1.6</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1914,7 +1914,7 @@
           const query = `
   MATCH (focus)
   WHERE elementId(focus) = $elementId
-  MATCH path = (focus)-[*0..${parseInt(depth)}]-(target)
+  MATCH path = (focus)-[*0..${parseInt(depthLimit)}]-(target)
   WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRels
   UNWIND range(0, size(pathNodes) - 1) AS idx
   WITH
