@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer</h1>
+      <h1>Neo4j Node Explorer 1.3</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1913,8 +1913,8 @@
             `
               MATCH (focus)
               WHERE elementId(focus) = $elementId
-              WITH focus, toInteger($depth) AS rawDepth
-              WITH focus, CASE WHEN rawDepth IS NULL OR rawDepth < 0 THEN 0 ELSE rawDepth END AS depth
+              WITH focus, toInteger($depth) AS depth
+              // WITH focus, CASE WHEN rawDepth IS NULL OR rawDepth < 0 THEN 0 ELSE rawDepth END AS depth
               MATCH path = (focus)-[*0..depth]-(target)
               WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRelationships
               UNWIND range(0, size(pathNodes) - 1) AS idx
