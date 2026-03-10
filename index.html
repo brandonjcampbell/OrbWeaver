@@ -514,7 +514,7 @@
   <header>
     <img class="logo" src="orbWeaver.png" alt="Orb Weaver logo" />
     <div class="heading">
-      <h1>Neo4j Node Explorer v1.6</h1>
+      <h1>Neo4j Node Explorer v1.7</h1>
       <p>Connected to Aura instance <strong>Instance02</strong> (<code>885f2ada</code>)</p>
     </div>
   </header>
@@ -1912,9 +1912,10 @@
 
 
           const query = `
+  WITH $depth as depth
   MATCH (focus)
   WHERE elementId(focus) = $elementId
-  MATCH path = (focus)-[*0..${parseInt(depthLimit)}]-(target)
+  MATCH path = (focus)-[*0..depth}]-(target)
   WITH focus, nodes(path) AS pathNodes, relationships(path) AS pathRels
   UNWIND range(0, size(pathNodes) - 1) AS idx
   WITH
@@ -1935,8 +1936,8 @@
     entry.depth        AS depth
   ORDER BY depth, elementId(node)
 `;
-
-var result = session.run(query, { elementId });  // depth is now a literal, not a param
+var depth = parseInt(depthLimit)
+const result = await runNeo4jQuery(query, { elementId,  depth});  // depth is now a literal, not a param
           
 
 
